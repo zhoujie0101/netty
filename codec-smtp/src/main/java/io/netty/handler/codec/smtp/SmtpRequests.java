@@ -15,7 +15,11 @@
  */
 package io.netty.handler.codec.smtp;
 
+import io.netty.util.AsciiString;
 import io.netty.util.internal.ObjectUtil;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Provides utility methods to create {@link SmtpRequest}s.
@@ -27,6 +31,7 @@ public final class SmtpRequests {
     private static final SmtpRequest RSET = new DefaultSmtpRequest(SmtpCommand.RSET);
     private static final SmtpRequest HELP_NO_ARG = new DefaultSmtpRequest(SmtpCommand.HELP);
     private static final SmtpRequest QUIT = new DefaultSmtpRequest(SmtpCommand.QUIT);
+    private static final AsciiString FROM_NULL_SENDER = new AsciiString("FROM:<>");
 
     /**
      * Creates a {@code HELO} request.
@@ -80,13 +85,16 @@ public final class SmtpRequests {
     /**
      * Creates a {@code MAIL} request.
      */
-    public static SmtpRequest mail(CharSequence sender, CharSequence... mailParamaters) {
-        if (mailParamaters == null || mailParamaters.length == 0) {
-            return new DefaultSmtpRequest(SmtpCommand.MAIL, "FROM:<" + (sender != null ? sender + ">" : '>'));
+    public static SmtpRequest mail(CharSequence sender, CharSequence... mailParameters) {
+        if (mailParameters == null || mailParameters.length == 0) {
+            return new DefaultSmtpRequest(SmtpCommand.MAIL,
+                                          sender != null ? "FROM:<" + sender + '>' : FROM_NULL_SENDER);
         } else {
-            CharSequence[] params = new CharSequence[mailParamaters.length + 1];
-            params[0] = "FROM:<" + (sender != null ? sender + ">" : '>');
-            System.arraycopy(mailParamaters, 0, params, 1, mailParamaters.length);
+            List<CharSequence> params = new ArrayList<CharSequence>(mailParameters.length + 1);
+            params.add(sender != null? "FROM:<" + sender + '>' : FROM_NULL_SENDER);
+            for (CharSequence param : mailParameters) {
+                params.add(param);
+            }
             return new DefaultSmtpRequest(SmtpCommand.MAIL, params);
         }
     }
@@ -99,9 +107,11 @@ public final class SmtpRequests {
         if (rcptParameters == null || rcptParameters.length == 0) {
             return new DefaultSmtpRequest(SmtpCommand.RCPT, "TO:<" + recipient + '>');
         } else {
-            CharSequence[] params = new CharSequence[rcptParameters.length + 1];
-            params[0] =  "TO:<" + recipient + '>';
-            System.arraycopy(rcptParameters, 0, params, 1, rcptParameters.length);
+            List<CharSequence> params = new ArrayList<CharSequence>(rcptParameters.length + 1);
+            params.add("TO:<" + recipient + '>');
+            for (CharSequence param : rcptParameters) {
+                params.add(param);
+            }
             return new DefaultSmtpRequest(SmtpCommand.RCPT, params);
         }
     }

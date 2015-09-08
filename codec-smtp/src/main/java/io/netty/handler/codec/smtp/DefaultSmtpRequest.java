@@ -17,6 +17,7 @@ package io.netty.handler.codec.smtp;
 
 import io.netty.util.internal.ObjectUtil;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -26,6 +27,11 @@ public class DefaultSmtpRequest implements SmtpRequest {
     private final SmtpCommand cmd;
     private final List<CharSequence> parameters;
 
+    public DefaultSmtpRequest(SmtpCommand cmd) {
+        this.cmd = ObjectUtil.checkNotNull(cmd, "cmd");
+        parameters = Collections.emptyList();
+    }
+
     public DefaultSmtpRequest(SmtpCommand cmd, CharSequence... parameters) {
         this.cmd = ObjectUtil.checkNotNull(cmd, "cmd");
         this.parameters = SmtpUtils.toUnmodifiableList(parameters);
@@ -33,6 +39,12 @@ public class DefaultSmtpRequest implements SmtpRequest {
 
     public DefaultSmtpRequest(CharSequence cmd, CharSequence... parameters) {
         this(SmtpCommand.valueOf(cmd), parameters);
+    }
+
+    DefaultSmtpRequest(SmtpCommand cmd, List<CharSequence> parameters) {
+        this.cmd = ObjectUtil.checkNotNull(cmd, "cmd");
+        this.parameters = parameters != null ?
+                Collections.unmodifiableList(parameters) : Collections.<CharSequence>emptyList();
     }
 
     @Override
