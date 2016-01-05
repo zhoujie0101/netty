@@ -96,7 +96,7 @@ final class PemReader {
 
         Matcher m = KEY_PATTERN.matcher(content);
         if (!m.find()) {
-            throw new KeyException("found no private key: " + file);
+            throw new KeyException("found no private PKCS8 key, maybe need to convert " + file + " to PKCS8 format ?");
         }
 
         ByteBuf base64 = Unpooled.copiedBuffer(m.group(1), CharsetUtil.US_ASCII);
