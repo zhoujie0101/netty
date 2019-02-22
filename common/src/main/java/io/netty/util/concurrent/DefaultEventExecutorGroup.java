@@ -22,9 +22,8 @@ import java.util.concurrent.ThreadFactory;
  * to handle the tasks.
  */
 public class DefaultEventExecutorGroup extends MultithreadEventExecutorGroup {
-
     /**
-     * @see {@link #DefaultEventExecutorGroup(int, ThreadFactory)}
+     * @see #DefaultEventExecutorGroup(int, ThreadFactory)
      */
     public DefaultEventExecutorGroup(int nThreads) {
         this(nThreads, null);
@@ -37,12 +36,25 @@ public class DefaultEventExecutorGroup extends MultithreadEventExecutorGroup {
      * @param threadFactory     the ThreadFactory to use, or {@code null} if the default should be used.
      */
     public DefaultEventExecutorGroup(int nThreads, ThreadFactory threadFactory) {
-        super(nThreads, threadFactory);
+        this(nThreads, threadFactory, SingleThreadEventExecutor.DEFAULT_MAX_PENDING_EXECUTOR_TASKS,
+                RejectedExecutionHandlers.reject());
+    }
+
+    /**
+     * Create a new instance.
+     *
+     * @param nThreads          the number of threads that will be used by this instance.
+     * @param threadFactory     the ThreadFactory to use, or {@code null} if the default should be used.
+     * @param maxPendingTasks   the maximum number of pending tasks before new tasks will be rejected.
+     * @param rejectedHandler   the {@link RejectedExecutionHandler} to use.
+     */
+    public DefaultEventExecutorGroup(int nThreads, ThreadFactory threadFactory, int maxPendingTasks,
+                                     RejectedExecutionHandler rejectedHandler) {
+        super(nThreads, threadFactory, maxPendingTasks, rejectedHandler);
     }
 
     @Override
-    protected EventExecutor newChild(
-            ThreadFactory threadFactory, Object... args) throws Exception {
-        return new DefaultEventExecutor(this, threadFactory);
+    protected EventExecutor newChild(ThreadFactory threadFactory, Object... args) throws Exception {
+        return new DefaultEventExecutor(this, threadFactory, (Integer) args[0], (RejectedExecutionHandler) args[1]);
     }
 }

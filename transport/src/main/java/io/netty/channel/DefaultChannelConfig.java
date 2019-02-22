@@ -18,14 +18,23 @@ package io.netty.channel;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.nio.AbstractNioByteChannel;
 import io.netty.channel.socket.SocketChannelConfig;
-import io.netty.util.internal.PlatformDependent;
 
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import static io.netty.channel.ChannelOption.*;
+import static io.netty.channel.ChannelOption.ALLOCATOR;
+import static io.netty.channel.ChannelOption.AUTO_CLOSE;
+import static io.netty.channel.ChannelOption.AUTO_READ;
+import static io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS;
+import static io.netty.channel.ChannelOption.MAX_MESSAGES_PER_READ;
+import static io.netty.channel.ChannelOption.MESSAGE_SIZE_ESTIMATOR;
+import static io.netty.channel.ChannelOption.SINGLE_EVENTEXECUTOR_PER_GROUP;
+import static io.netty.channel.ChannelOption.RCVBUF_ALLOCATOR;
+import static io.netty.channel.ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK;
+import static io.netty.channel.ChannelOption.WRITE_BUFFER_LOW_WATER_MARK;
+import static io.netty.channel.ChannelOption.WRITE_SPIN_COUNT;
 
 /**
  * The default {@link SocketChannelConfig} implementation.
@@ -37,16 +46,8 @@ public class DefaultChannelConfig implements ChannelConfig {
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30000;
 
-    private static final AtomicIntegerFieldUpdater<DefaultChannelConfig> AUTOREAD_UPDATER;
-
-    static {
-        AtomicIntegerFieldUpdater<DefaultChannelConfig> autoReadUpdater =
-            PlatformDependent.newAtomicIntegerFieldUpdater(DefaultChannelConfig.class, "autoRead");
-        if (autoReadUpdater == null) {
-            autoReadUpdater = AtomicIntegerFieldUpdater.newUpdater(DefaultChannelConfig.class, "autoRead");
-        }
-        AUTOREAD_UPDATER = autoReadUpdater;
-    }
+    private static final AtomicIntegerFieldUpdater<DefaultChannelConfig> AUTOREAD_UPDATER =
+            AtomicIntegerFieldUpdater.newUpdater(DefaultChannelConfig.class, "autoRead");
 
     protected final Channel channel;
 
@@ -62,6 +63,7 @@ public class DefaultChannelConfig implements ChannelConfig {
     private volatile boolean autoClose = true;
     private volatile int writeBufferHighWaterMark = 64 * 1024;
     private volatile int writeBufferLowWaterMark = 32 * 1024;
+    private volatile boolean pinEventExecutor = true;
 
     public DefaultChannelConfig(Channel channel) {
         if (channel == null) {
@@ -87,7 +89,7 @@ public class DefaultChannelConfig implements ChannelConfig {
                 null,
                 CONNECT_TIMEOUT_MILLIS, MAX_MESSAGES_PER_READ, WRITE_SPIN_COUNT,
                 ALLOCATOR, AUTO_READ, AUTO_CLOSE, RCVBUF_ALLOCATOR, WRITE_BUFFER_HIGH_WATER_MARK,
-                WRITE_BUFFER_LOW_WATER_MARK, MESSAGE_SIZE_ESTIMATOR);
+                WRITE_BUFFER_LOW_WATER_MARK, MESSAGE_SIZE_ESTIMATOR,  SINGLE_EVENTEXECUTOR_PER_GROUP);
     }
 
     protected Map<ChannelOption<?>, Object> getOptions(
@@ -155,6 +157,9 @@ public class DefaultChannelConfig implements ChannelConfig {
         if (option == MESSAGE_SIZE_ESTIMATOR) {
             return (T) getMessageSizeEstimator();
         }
+        if (option == SINGLE_EVENTEXECUTOR_PER_GROUP) {
+            return (T) Boolean.valueOf(getPinEventExecutorPerGroup());
+        }
         return null;
     }
 
@@ -183,6 +188,8 @@ public class DefaultChannelConfig implements ChannelConfig {
             setWriteBufferLowWaterMark((Integer) value);
         } else if (option == MESSAGE_SIZE_ESTIMATOR) {
             setMessageSizeEstimator((MessageSizeEstimator) value);
+        } else if (option == SINGLE_EVENTEXECUTOR_PER_GROUP) {
+            setPinEventExecutorPerGroup((Boolean) value);
         } else {
             return false;
         }
@@ -357,4 +364,14 @@ public class DefaultChannelConfig implements ChannelConfig {
         msgSizeEstimator = estimator;
         return this;
     }
+
+    private ChannelConfig setPinEventExecutorPerGroup(boolean pinEventExecutor) {
+        this.pinEventExecutor = pinEventExecutor;
+        return this;
+    }
+
+    private boolean getPinEventExecutorPerGroup() {
+        return pinEventExecutor;
+    }
+
 }

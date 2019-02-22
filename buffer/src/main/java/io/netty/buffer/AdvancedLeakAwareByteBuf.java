@@ -16,7 +16,8 @@
 
 package io.netty.buffer;
 
-import io.netty.util.ResourceLeak;
+import io.netty.util.ResourceLeakDetector;
+import io.netty.util.ResourceLeakTracker;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -30,7 +31,7 @@ import java.nio.channels.GatheringByteChannel;
 import java.nio.channels.ScatteringByteChannel;
 import java.nio.charset.Charset;
 
-final class AdvancedLeakAwareByteBuf extends WrappedByteBuf {
+final class AdvancedLeakAwareByteBuf extends SimpleLeakAwareByteBuf {
 
     private static final String PROP_ACQUIRE_AND_RELEASE_ONLY = "io.netty.leakDetection.acquireAndReleaseOnly";
     private static final boolean ACQUIRE_AND_RELEASE_ONLY;
@@ -43,38 +44,20 @@ final class AdvancedLeakAwareByteBuf extends WrappedByteBuf {
         if (logger.isDebugEnabled()) {
             logger.debug("-D{}: {}", PROP_ACQUIRE_AND_RELEASE_ONLY, ACQUIRE_AND_RELEASE_ONLY);
         }
+
+        ResourceLeakDetector.addExclusions(
+                AdvancedLeakAwareByteBuf.class, "recordLeakNonRefCountingOperation");
     }
 
-    private final ResourceLeak leak;
-
-    AdvancedLeakAwareByteBuf(ByteBuf buf, ResourceLeak leak) {
-        super(buf);
-        this.leak = leak;
+    AdvancedLeakAwareByteBuf(ByteBuf buf, ResourceLeakTracker<ByteBuf> leak) {
+        super(buf, leak);
     }
 
-    @Override
-    public boolean release() {
-        boolean deallocated =  super.release();
-        if (deallocated) {
-            leak.close();
-        } else {
-            leak.record();
-        }
-        return deallocated;
+    AdvancedLeakAwareByteBuf(ByteBuf wrapped, ByteBuf trackedByteBuf, ResourceLeakTracker<ByteBuf> leak) {
+        super(wrapped, trackedByteBuf, leak);
     }
 
-    @Override
-    public boolean release(int decrement) {
-        boolean deallocated = super.release(decrement);
-        if (deallocated) {
-            leak.close();
-        } else {
-            leak.record();
-        }
-        return deallocated;
-    }
-
-    static void recordLeakNonRefCountingOperation(ResourceLeak leak) {
+    static void recordLeakNonRefCountingOperation(ResourceLeakTracker<ByteBuf> leak) {
         if (!ACQUIRE_AND_RELEASE_ONLY) {
             leak.record();
         }
@@ -83,35 +66,31 @@ final class AdvancedLeakAwareByteBuf extends WrappedByteBuf {
     @Override
     public ByteBuf order(ByteOrder endianness) {
         recordLeakNonRefCountingOperation(leak);
-        if (order() == endianness) {
-            return this;
-        } else {
-            return new AdvancedLeakAwareByteBuf(super.order(endianness), leak);
-        }
+        return super.order(endianness);
     }
 
     @Override
     public ByteBuf slice() {
         recordLeakNonRefCountingOperation(leak);
-        return new AdvancedLeakAwareByteBuf(super.slice(), leak);
+        return super.slice();
     }
 
     @Override
     public ByteBuf slice(int index, int length) {
         recordLeakNonRefCountingOperation(leak);
-        return new AdvancedLeakAwareByteBuf(super.slice(index, length), leak);
+        return super.slice(index, length);
     }
 
     @Override
     public ByteBuf duplicate() {
         recordLeakNonRefCountingOperation(leak);
-        return new AdvancedLeakAwareByteBuf(super.duplicate(), leak);
+        return super.duplicate();
     }
 
     @Override
     public ByteBuf readSlice(int length) {
         recordLeakNonRefCountingOperation(leak);
-        return new AdvancedLeakAwareByteBuf(super.readSlice(length), leak);
+        return super.readSlice(length);
     }
 
     @Override
@@ -727,6 +706,12 @@ final class AdvancedLeakAwareByteBuf extends WrappedByteBuf {
     }
 
     @Override
+    public ByteBuf capacity(int newCapacity) {
+        recordLeakNonRefCountingOperation(leak);
+        return super.capacity(newCapacity);
+    }
+
+    @Override
     public ByteBuf retain() {
         leak.record();
         return super.retain();
@@ -739,8 +724,20 @@ final class AdvancedLeakAwareByteBuf extends WrappedByteBuf {
     }
 
     @Override
-    public ByteBuf capacity(int newCapacity) {
-        recordLeakNonRefCountingOperation(leak);
-        return super.capacity(newCapacity);
+    public boolean release() {
+        leak.record();
+        return super.release();
+    }
+
+    @Override
+    public boolean release(int decrement) {
+        leak.record();
+        return super.release(decrement);
+    }
+
+    @Override
+    protected AdvancedLeakAwareByteBuf newLeakAwareByteBuf(
+            ByteBuf buf, ByteBuf trackedByteBuf, ResourceLeakTracker<ByteBuf> leakTracker) {
+        return new AdvancedLeakAwareByteBuf(buf, trackedByteBuf, leakTracker);
     }
 }

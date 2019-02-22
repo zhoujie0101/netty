@@ -28,7 +28,6 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelProgressivePromise;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.ReferenceCountUtil;
-import io.netty.util.internal.OneTimeTask;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -114,7 +113,7 @@ public class ChunkedWriteHandler
             }
         } else {
             // let the transfer resume on the next event loop round
-            ctx.executor().execute(new OneTimeTask() {
+            ctx.executor().execute(new Runnable() {
 
                 @Override
                 public void run() {
@@ -137,10 +136,7 @@ public class ChunkedWriteHandler
 
     @Override
     public void flush(ChannelHandlerContext ctx) throws Exception {
-        if (!doFlush(ctx)) {
-            // Make sure to flush at least once.
-            ctx.flush();
-        }
+        doFlush(ctx);
     }
 
     @Override
@@ -198,14 +194,14 @@ public class ChunkedWriteHandler
         }
     }
 
-    private boolean doFlush(final ChannelHandlerContext ctx) throws Exception {
+    private void doFlush(final ChannelHandlerContext ctx) throws Exception {
         final Channel channel = ctx.channel();
         if (!channel.isActive()) {
             discard(null);
-            return false;
+            return;
         }
 
-        boolean flushed = false;
+        boolean requiresFlush = true;
         while (channel.isWritable()) {
             if (currentWrite == null) {
                 currentWrite = queue.poll();
@@ -303,14 +299,14 @@ public class ChunkedWriteHandler
                         }
                     });
                 }
+                // Flush each chunk to conserve memory
+                ctx.flush();
+                requiresFlush = false;
             } else {
                 ctx.write(pendingMessage, currentWrite.promise);
                 this.currentWrite = null;
+                requiresFlush = true;
             }
-
-            // Always need to flush
-            ctx.flush();
-            flushed = true;
 
             if (!channel.isActive()) {
                 discard(new ClosedChannelException());
@@ -318,7 +314,9 @@ public class ChunkedWriteHandler
             }
         }
 
-        return flushed;
+        if (requiresFlush) {
+            ctx.flush();
+        }
     }
 
     static void closeInput(ChunkedInput<?> chunks) {

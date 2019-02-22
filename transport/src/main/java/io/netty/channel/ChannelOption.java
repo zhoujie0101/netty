@@ -53,7 +53,7 @@ public class ChannelOption<T> extends UniqueName {
     public static final ChannelOption<Boolean> AUTO_READ = valueOf("AUTO_READ");
 
     /**
-     * @deprecated From version 5.0, {@link Channel} will not be closed on write failure.
+     * @deprecated  Auto close will be removed in a future release.
      *
      * If {@code true} then the {@link Channel} is closed automatically and immediately on write failure.
      * The default value is {@code true}.
@@ -86,6 +86,9 @@ public class ChannelOption<T> extends UniqueName {
     @Deprecated
     public static final ChannelOption<Boolean> DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION =
             valueOf("DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION");
+
+    public static final ChannelOption<Boolean> SINGLE_EVENTEXECUTOR_PER_GROUP =
+            valueOf("SINGLE_EVENTEXECUTOR_PER_GROUP");
 
     /**
      * Creates a new {@link ChannelOption} with the specified {@param name} or return the already existing

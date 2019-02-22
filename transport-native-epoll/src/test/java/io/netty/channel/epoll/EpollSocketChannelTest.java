@@ -26,6 +26,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
+import io.netty.util.NetUtil;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.Assert;
 import org.junit.Test;
@@ -35,9 +36,6 @@ import java.net.SocketAddress;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 public class EpollSocketChannelTest {
 
@@ -120,7 +118,7 @@ public class EpollSocketChannelTest {
         EventLoopGroup group = new EpollEventLoopGroup();
         try {
             runExceptionHandleFeedbackLoop(group, EpollServerSocketChannel.class, EpollSocketChannel.class,
-                    new InetSocketAddress(0));
+                    new InetSocketAddress(NetUtil.LOCALHOST, 0));
             runExceptionHandleFeedbackLoop(group, EpollServerDomainSocketChannel.class, EpollDomainSocketChannel.class,
                     EpollSocketTestPermutation.newSocketAddress());
         } finally {
@@ -129,7 +127,8 @@ public class EpollSocketChannelTest {
     }
 
     private void runExceptionHandleFeedbackLoop(EventLoopGroup group, Class<? extends ServerChannel> serverChannelClass,
-            Class<? extends Channel> channelClass, SocketAddress bindAddr) throws InterruptedException {
+                                                Class<? extends Channel> channelClass, SocketAddress bindAddr)
+            throws InterruptedException {
         Channel serverChannel = null;
         Channel clientChannel = null;
         try {
@@ -145,17 +144,16 @@ public class EpollSocketChannelTest {
             Bootstrap b = new Bootstrap();
             b.group(group);
             b.channel(channelClass);
-            b.remoteAddress(serverChannel.localAddress());
             b.handler(new MyInitializer());
-            clientChannel = b.connect().syncUninterruptibly().channel();
+            clientChannel = b.connect(serverChannel.localAddress()).syncUninterruptibly().channel();
 
             clientChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[1024]));
 
             // We expect to get 2 exceptions (1 from BuggyChannelHandler and 1 from ExceptionHandler).
-            assertTrue(serverInitializer.exceptionHandler.latch1.await(2, TimeUnit.SECONDS));
+            Assert.assertTrue(serverInitializer.exceptionHandler.latch1.await(2, TimeUnit.SECONDS));
 
             // After we get the first exception, we should get no more, this is expected to timeout.
-            assertFalse("Encountered " + serverInitializer.exceptionHandler.count.get() +
+            Assert.assertFalse("Encountered " + serverInitializer.exceptionHandler.count.get() +
                     " exceptions when 1 was expected",
                     serverInitializer.exceptionHandler.latch2.await(2, TimeUnit.SECONDS));
         } finally {
@@ -190,10 +188,9 @@ public class EpollSocketChannelTest {
     private static class ExceptionHandler extends ChannelInboundHandlerAdapter {
         final AtomicLong count = new AtomicLong();
         /**
-         * We expect to get 2 calls to {@link #exceptionCaught(ChannelHandlerContext, Throwable)}.
-         * 1 call from BuggyChannelHandler and 1 from closing the channel in this class.
+         * We expect to get 1 call to {@link #exceptionCaught(ChannelHandlerContext, Throwable)}.
          */
-        final CountDownLatch latch1 = new CountDownLatch(2);
+        final CountDownLatch latch1 = new CountDownLatch(1);
         final CountDownLatch latch2 = new CountDownLatch(1);
 
         @Override
@@ -203,8 +200,26 @@ public class EpollSocketChannelTest {
             } else {
                 latch2.countDown();
             }
-            // This is expected to throw an exception!
+            // This should not throw any exception.
             ctx.close();
+        }
+    }
+
+    // See https://github.com/netty/netty/issues/7159
+    @Test
+    public void testSoLingerNoAssertError() throws Exception {
+        EventLoopGroup group = new EpollEventLoopGroup(1);
+
+        try {
+            Bootstrap bootstrap = new Bootstrap();
+            EpollSocketChannel ch = (EpollSocketChannel) bootstrap.group(group)
+                    .channel(EpollSocketChannel.class)
+                    .option(ChannelOption.SO_LINGER, 10)
+                    .handler(new ChannelInboundHandlerAdapter())
+                    .bind(new InetSocketAddress(0)).syncUninterruptibly().channel();
+            ch.close().syncUninterruptibly();
+        } finally {
+            group.shutdownGracefully();
         }
     }
 }
