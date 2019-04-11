@@ -33,7 +33,8 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
     protected int length;
     int maxLength;
     PoolThreadCache cache;
-    private ByteBuffer tmpNioBuf;
+    ByteBuffer tmpNioBuf;
+    private ByteBufAllocator allocator;
 
     @SuppressWarnings("unchecked")
     protected PooledByteBuf(Recycler.Handle<? extends PooledByteBuf<T>> recyclerHandle, int maxCapacity) {
@@ -41,30 +42,29 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
         this.recyclerHandle = (Handle<PooledByteBuf<T>>) recyclerHandle;
     }
 
-    void init(PoolChunk<T> chunk, long handle, int offset, int length, int maxLength, PoolThreadCache cache) {
+    void init(PoolChunk<T> chunk, ByteBuffer nioBuffer,
+              long handle, int offset, int length, int maxLength, PoolThreadCache cache) {
+        init0(chunk, nioBuffer, handle, offset, length, maxLength, cache);
+    }
+
+    void initUnpooled(PoolChunk<T> chunk, int length) {
+        init0(chunk, null, 0, chunk.offset, length, length, null);
+    }
+
+    private void init0(PoolChunk<T> chunk, ByteBuffer nioBuffer,
+                       long handle, int offset, int length, int maxLength, PoolThreadCache cache) {
         assert handle >= 0;
         assert chunk != null;
 
         this.chunk = chunk;
-        this.handle = handle;
         memory = chunk.memory;
+        tmpNioBuf = nioBuffer;
+        allocator = chunk.arena.parent;
+        this.cache = cache;
+        this.handle = handle;
         this.offset = offset;
         this.length = length;
         this.maxLength = maxLength;
-        tmpNioBuf = null;
-        this.cache = cache;
-    }
-
-    void initUnpooled(PoolChunk<T> chunk, int length) {
-        assert chunk != null;
-
-        this.chunk = chunk;
-        handle = 0;
-        memory = chunk.memory;
-        offset = 0;
-        this.length = maxLength = length;
-        tmpNioBuf = null;
-        cache = null;
     }
 
     /**
@@ -72,7 +72,7 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
      */
     final void reuse(int maxCapacity) {
         maxCapacity(maxCapacity);
-        setRefCnt(1);
+        resetRefCnt();
         setIndex0(0, 0);
         discardMarks();
     }
@@ -84,7 +84,7 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
 
     @Override
     public final ByteBuf capacity(int newCapacity) {
-        ensureAccessible();
+        checkNewCapacity(newCapacity);
 
         // If the request capacity does not require reallocation, just update the length of the memory.
         if (chunk.unpooled) {
@@ -123,7 +123,7 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
 
     @Override
     public final ByteBufAllocator alloc() {
-        return chunk.arena.parent;
+        return allocator;
     }
 
     @Override
@@ -134,6 +134,22 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
     @Override
     public final ByteBuf unwrap() {
         return null;
+    }
+
+    @Override
+    public final ByteBuf retainedDuplicate() {
+        return PooledDuplicatedByteBuf.newInstance(this, this, readerIndex(), writerIndex());
+    }
+
+    @Override
+    public final ByteBuf retainedSlice() {
+        final int index = readerIndex();
+        return retainedSlice(index, writerIndex() - index);
+    }
+
+    @Override
+    public final ByteBuf retainedSlice(int index, int length) {
+        return PooledSlicedByteBuf.newInstance(this, this, index, length);
     }
 
     protected final ByteBuffer internalNioBuffer() {
@@ -152,7 +168,9 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
             final long handle = this.handle;
             this.handle = -1;
             memory = null;
-            chunk.arena.free(chunk, handle, maxLength, cache);
+            chunk.arena.free(chunk, tmpNioBuf, handle, maxLength, cache);
+            tmpNioBuf = null;
+            chunk = null;
             recycle();
         }
     }

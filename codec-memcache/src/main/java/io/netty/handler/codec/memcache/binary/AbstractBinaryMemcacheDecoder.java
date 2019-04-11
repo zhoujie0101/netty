@@ -15,6 +15,8 @@
  */
 package io.netty.handler.codec.memcache.binary;
 
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
@@ -24,17 +26,16 @@ import io.netty.handler.codec.memcache.DefaultLastMemcacheContent;
 import io.netty.handler.codec.memcache.DefaultMemcacheContent;
 import io.netty.handler.codec.memcache.LastMemcacheContent;
 import io.netty.handler.codec.memcache.MemcacheContent;
-import io.netty.util.CharsetUtil;
+import io.netty.util.internal.UnstableApi;
 
 import java.util.List;
-
-import static io.netty.buffer.ByteBufUtil.*;
 
 /**
  * Decoder for both {@link BinaryMemcacheRequest} and {@link BinaryMemcacheResponse}.
  * <p/>
  * The difference in the protocols (header) is implemented by the subclasses.
  */
+@UnstableApi
 public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMessage>
     extends AbstractMemcacheObjectDecoder {
 
@@ -60,9 +61,7 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
      * @param chunkSize the maximum chunk size of the payload.
      */
     protected AbstractBinaryMemcacheDecoder(int chunkSize) {
-        if (chunkSize < 0) {
-            throw new IllegalArgumentException("chunkSize must be a positive integer: " + chunkSize);
-        }
+        checkPositiveOrZero(chunkSize, "chunkSize");
 
         this.chunkSize = chunkSize;
     }
@@ -79,6 +78,7 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
                 currentMessage = decodeHeader(in);
                 state = State.READ_EXTRAS;
             } catch (Exception e) {
+                resetDecoder();
                 out.add(invalidMessage(e));
                 return;
             }
@@ -89,11 +89,12 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
                         return;
                     }
 
-                    currentMessage.setExtras(readBytes(ctx.alloc(), in, extrasLength));
+                    currentMessage.setExtras(in.readRetainedSlice(extrasLength));
                 }
 
                 state = State.READ_KEY;
             } catch (Exception e) {
+                resetDecoder();
                 out.add(invalidMessage(e));
                 return;
             }
@@ -104,13 +105,12 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
                         return;
                     }
 
-                    currentMessage.setKey(in.toString(in.readerIndex(), keyLength, CharsetUtil.UTF_8));
-                    in.skipBytes(keyLength);
+                    currentMessage.setKey(in.readRetainedSlice(keyLength));
                 }
-
-                out.add(currentMessage);
+                out.add(currentMessage.retain());
                 state = State.READ_CONTENT;
             } catch (Exception e) {
+                resetDecoder();
                 out.add(invalidMessage(e));
                 return;
             }
@@ -133,7 +133,7 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
                         toRead = remainingLength;
                     }
 
-                    ByteBuf chunkBuffer = readBytes(ctx.alloc(), in, toRead);
+                    ByteBuf chunkBuffer = in.readRetainedSlice(toRead);
 
                     MemcacheContent chunk;
                     if ((alreadyReadChunkSize += toRead) >= valueLength) {
@@ -150,9 +150,11 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
                     out.add(LastMemcacheContent.EMPTY_LAST_CONTENT);
                 }
 
+                resetDecoder();
                 state = State.READ_HEADER;
                 return;
             } catch (Exception e) {
+                resetDecoder();
                 out.add(invalidChunk(e));
                 return;
             }
@@ -200,10 +202,6 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         super.channelInactive(ctx);
 
-        if (currentMessage != null) {
-            currentMessage.release();
-        }
-
         resetDecoder();
     }
 
@@ -211,7 +209,10 @@ public abstract class AbstractBinaryMemcacheDecoder<M extends BinaryMemcacheMess
      * Prepare for next decoding iteration.
      */
     protected void resetDecoder() {
-        currentMessage = null;
+        if (currentMessage != null) {
+            currentMessage.release();
+            currentMessage = null;
+        }
         alreadyReadChunkSize = 0;
     }
 

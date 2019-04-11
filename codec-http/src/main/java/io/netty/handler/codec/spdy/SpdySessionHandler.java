@@ -20,24 +20,23 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
-import io.netty.util.internal.EmptyArrays;
+import io.netty.util.internal.ThrowableUtil;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static io.netty.handler.codec.spdy.SpdyCodecUtil.*;
+import static io.netty.handler.codec.spdy.SpdyCodecUtil.SPDY_SESSION_STREAM_ID;
+import static io.netty.handler.codec.spdy.SpdyCodecUtil.isServerId;
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 
 /**
  * Manages streams within a SPDY session.
  */
 public class SpdySessionHandler extends ChannelDuplexHandler {
 
-    private static final SpdyProtocolException PROTOCOL_EXCEPTION = new SpdyProtocolException();
-    private static final SpdyProtocolException STREAM_CLOSED = new SpdyProtocolException("Stream closed");
-
-    static {
-        PROTOCOL_EXCEPTION.setStackTrace(EmptyArrays.EMPTY_STACK_TRACE);
-        STREAM_CLOSED.setStackTrace(EmptyArrays.EMPTY_STACK_TRACE);
-    }
+    private static final SpdyProtocolException PROTOCOL_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new SpdyProtocolException(), SpdySessionHandler.class, "handleOutboundMessage(...)");
+    private static final SpdyProtocolException STREAM_CLOSED = ThrowableUtil.unknownStackTrace(
+            new SpdyProtocolException("Stream closed"), SpdySessionHandler.class, "removeStream(...)");
 
     private static final int DEFAULT_WINDOW_SIZE = 64 * 1024; // 64 KB default initial window size
     private int initialSendWindowSize    = DEFAULT_WINDOW_SIZE;
@@ -79,16 +78,14 @@ public class SpdySessionHandler extends ChannelDuplexHandler {
     }
 
     public void setSessionReceiveWindowSize(int sessionReceiveWindowSize) {
-      if (sessionReceiveWindowSize < 0) {
-        throw new IllegalArgumentException("sessionReceiveWindowSize");
-      }
-      // This will not send a window update frame immediately.
-      // If this value increases the allowed receive window size,
-      // a WINDOW_UPDATE frame will be sent when only half of the
-      // session window size remains during data frame processing.
-      // If this value decreases the allowed receive window size,
-      // the window will be reduced as data frames are processed.
-      initialSessionReceiveWindowSize = sessionReceiveWindowSize;
+        checkPositiveOrZero(sessionReceiveWindowSize, "sessionReceiveWindowSize");
+        // This will not send a window update frame immediately.
+        // If this value increases the allowed receive window size,
+        // a WINDOW_UPDATE frame will be sent when only half of the
+        // session window size remains during data frame processing.
+        // If this value decreases the allowed receive window size,
+        // the window will be reduced as data frames are processed.
+        initialSessionReceiveWindowSize = sessionReceiveWindowSize;
     }
 
     @Override
@@ -190,8 +187,8 @@ public class SpdySessionHandler extends ChannelDuplexHandler {
             // Send data frames upstream in initialReceiveWindowSize chunks
             if (newWindowSize < 0) {
                 while (spdyDataFrame.content().readableBytes() > initialReceiveWindowSize) {
-                    SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(streamId,
-                            spdyDataFrame.content().readSlice(initialReceiveWindowSize).retain());
+                    SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(
+                            streamId, spdyDataFrame.content().readRetainedSlice(initialReceiveWindowSize));
                     ctx.writeAndFlush(partialDataFrame);
                 }
             }
@@ -497,8 +494,8 @@ public class SpdySessionHandler extends ChannelDuplexHandler {
                 spdySession.updateSendWindowSize(SPDY_SESSION_STREAM_ID, -1 * sendWindowSize);
 
                 // Create a partial data frame whose length is the current window size
-                SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(streamId,
-                        spdyDataFrame.content().readSlice(sendWindowSize).retain());
+                SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(
+                        streamId, spdyDataFrame.content().readRetainedSlice(sendWindowSize));
 
                 // Enqueue the remaining data (will be the first frame queued)
                 spdySession.putPendingWrite(streamId, new SpdySession.PendingWrite(spdyDataFrame, promise));
@@ -778,8 +775,8 @@ public class SpdySessionHandler extends ChannelDuplexHandler {
                 spdySession.updateSendWindowSize(SPDY_SESSION_STREAM_ID, -1 * sendWindowSize);
 
                 // Create a partial data frame whose length is the current window size
-                SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(writeStreamId,
-                        spdyDataFrame.content().readSlice(sendWindowSize).retain());
+                SpdyDataFrame partialDataFrame = new DefaultSpdyDataFrame(
+                        writeStreamId, spdyDataFrame.content().readRetainedSlice(sendWindowSize));
 
                 // The transfer window size is pre-decremented when sending a data frame downstream.
                 // Close the session on write failures that leave the transfer window in a corrupt state.

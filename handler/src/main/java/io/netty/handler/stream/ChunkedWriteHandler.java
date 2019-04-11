@@ -27,7 +27,6 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelProgressivePromise;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.ReferenceCountUtil;
-import io.netty.util.internal.OneTimeTask;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -103,28 +102,26 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
             return;
         }
         if (ctx.executor().inEventLoop()) {
-            try {
-                doFlush(ctx);
-            } catch (Exception e) {
-                if (logger.isWarnEnabled()) {
-                    logger.warn("Unexpected exception while sending chunks.", e);
-                }
-            }
+            resumeTransfer0(ctx);
         } else {
             // let the transfer resume on the next event loop round
-            ctx.executor().execute(new OneTimeTask() {
+            ctx.executor().execute(new Runnable() {
 
                 @Override
                 public void run() {
-                    try {
-                        doFlush(ctx);
-                    } catch (Exception e) {
-                        if (logger.isWarnEnabled()) {
-                            logger.warn("Unexpected exception while sending chunks.", e);
-                        }
-                    }
+                    resumeTransfer0(ctx);
                 }
             });
+        }
+    }
+
+    private void resumeTransfer0(ChannelHandlerContext ctx) {
+        try {
+            doFlush(ctx);
+        } catch (Exception e) {
+            if (logger.isWarnEnabled()) {
+                logger.warn("Unexpected exception while sending chunks.", e);
+            }
         }
     }
 
@@ -135,10 +132,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
 
     @Override
     public void flush(ChannelHandlerContext ctx) throws Exception {
-        if (!doFlush(ctx)) {
-            // Make sure to flush at least once.
-            ctx.flush();
-        }
+        doFlush(ctx);
     }
 
     @Override
@@ -172,20 +166,28 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
             Object message = currentWrite.msg;
             if (message instanceof ChunkedInput) {
                 ChunkedInput<?> in = (ChunkedInput<?>) message;
+                boolean endOfInput;
+                long inputLength;
                 try {
-                    if (!in.isEndOfInput()) {
-                        if (cause == null) {
-                            cause = new ClosedChannelException();
-                        }
-                        currentWrite.fail(cause);
-                    } else {
-                        currentWrite.success(in.length());
-                    }
+                    endOfInput = in.isEndOfInput();
+                    inputLength = in.length();
                     closeInput(in);
                 } catch (Exception e) {
-                    currentWrite.fail(e);
-                    logger.warn(ChunkedInput.class.getSimpleName() + ".isEndOfInput() failed", e);
                     closeInput(in);
+                    currentWrite.fail(e);
+                    if (logger.isWarnEnabled()) {
+                        logger.warn(ChunkedInput.class.getSimpleName() + " failed", e);
+                    }
+                    continue;
+                }
+
+                if (!endOfInput) {
+                    if (cause == null) {
+                        cause = new ClosedChannelException();
+                    }
+                    currentWrite.fail(cause);
+                } else {
+                    currentWrite.success(inputLength);
                 }
             } else {
                 if (cause == null) {
@@ -196,14 +198,14 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
         }
     }
 
-    private boolean doFlush(final ChannelHandlerContext ctx) throws Exception {
+    private void doFlush(final ChannelHandlerContext ctx) {
         final Channel channel = ctx.channel();
         if (!channel.isActive()) {
             discard(null);
-            return false;
+            return;
         }
 
-        boolean flushed = false;
+        boolean requiresFlush = true;
         ByteBufAllocator allocator = ctx.alloc();
         while (channel.isWritable()) {
             if (currentWrite == null) {
@@ -213,6 +215,21 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
             if (currentWrite == null) {
                 break;
             }
+
+            if (currentWrite.promise.isDone()) {
+                // This might happen e.g. in the case when a write operation
+                // failed, but there're still unconsumed chunks left.
+                // Most chunked input sources would stop generating chunks
+                // and report end of input, but this doesn't work with any
+                // source wrapped in HttpChunkedInput.
+                // Note, that we're not trying to release the message/chunks
+                // as this had to be done already by someone who resolved the
+                // promise (using ChunkedInput.close method).
+                // See https://github.com/netty/netty/issues/8700.
+                this.currentWrite = null;
+                continue;
+            }
+
             final PendingWrite currentWrite = this.currentWrite;
             final Object pendingMessage = currentWrite.msg;
 
@@ -238,8 +255,8 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                         ReferenceCountUtil.release(message);
                     }
 
-                    currentWrite.fail(t);
                     closeInput(chunks);
+                    currentWrite.fail(t);
                     break;
                 }
 
@@ -268,9 +285,17 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                     f.addListener(new ChannelFutureListener() {
                         @Override
                         public void operationComplete(ChannelFuture future) throws Exception {
-                            currentWrite.progress(chunks.progress(), chunks.length());
-                            currentWrite.success(chunks.length());
-                            closeInput(chunks);
+                            if (!future.isSuccess()) {
+                                closeInput(chunks);
+                                currentWrite.fail(future.cause());
+                            } else {
+                                // read state of the input in local variables before closing it
+                                long inputProgress = chunks.progress();
+                                long inputLength = chunks.length();
+                                closeInput(chunks);
+                                currentWrite.progress(inputProgress, inputLength);
+                                currentWrite.success(inputLength);
+                            }
                         }
                     });
                 } else if (channel.isWritable()) {
@@ -278,7 +303,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                         @Override
                         public void operationComplete(ChannelFuture future) throws Exception {
                             if (!future.isSuccess()) {
-                                closeInput((ChunkedInput<?>) pendingMessage);
+                                closeInput(chunks);
                                 currentWrite.fail(future.cause());
                             } else {
                                 currentWrite.progress(chunks.progress(), chunks.length());
@@ -290,7 +315,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                         @Override
                         public void operationComplete(ChannelFuture future) throws Exception {
                             if (!future.isSuccess()) {
-                                closeInput((ChunkedInput<?>) pendingMessage);
+                                closeInput(chunks);
                                 currentWrite.fail(future.cause());
                             } else {
                                 currentWrite.progress(chunks.progress(), chunks.length());
@@ -301,14 +326,14 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                         }
                     });
                 }
+                // Flush each chunk to conserve memory
+                ctx.flush();
+                requiresFlush = false;
             } else {
-                ctx.write(pendingMessage, currentWrite.promise);
                 this.currentWrite = null;
+                ctx.write(pendingMessage, currentWrite.promise);
+                requiresFlush = true;
             }
-
-            // Always need to flush
-            ctx.flush();
-            flushed = true;
 
             if (!channel.isActive()) {
                 discard(new ClosedChannelException());
@@ -316,10 +341,12 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
             }
         }
 
-        return flushed;
+        if (requiresFlush) {
+            ctx.flush();
+        }
     }
 
-    static void closeInput(ChunkedInput<?> chunks) {
+    private static void closeInput(ChunkedInput<?> chunks) {
         try {
             chunks.close();
         } catch (Throwable t) {
@@ -348,12 +375,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                 // No need to notify the progress or fulfill the promise because it's done already.
                 return;
             }
-
-            if (promise instanceof ChannelProgressivePromise) {
-                // Now we know what the total is.
-                ((ChannelProgressivePromise) promise).tryProgress(total, total);
-            }
-
+            progress(total, total);
             promise.trySuccess();
         }
 

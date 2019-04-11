@@ -200,31 +200,83 @@ final class PoolSubpage<T> implements PoolSubpageMetric {
 
     @Override
     public String toString() {
+        final boolean doNotDestroy;
+        final int maxNumElems;
+        final int numAvail;
+        final int elemSize;
+        if (chunk == null) {
+            // This is the head so there is no need to synchronize at all as these never change.
+            doNotDestroy = true;
+            maxNumElems = 0;
+            numAvail = 0;
+            elemSize = -1;
+        } else {
+            synchronized (chunk.arena) {
+                if (!this.doNotDestroy) {
+                    doNotDestroy = false;
+                    // Not used for creating the String.
+                    maxNumElems = numAvail = elemSize = -1;
+                } else {
+                    doNotDestroy = true;
+                    maxNumElems = this.maxNumElems;
+                    numAvail = this.numAvail;
+                    elemSize = this.elemSize;
+                }
+            }
+        }
+
         if (!doNotDestroy) {
             return "(" + memoryMapIdx + ": not in use)";
         }
 
-        return String.valueOf('(') + memoryMapIdx + ": " + (maxNumElems - numAvail) + '/' + maxNumElems +
-               ", offset: " + runOffset + ", length: " + pageSize + ", elemSize: " + elemSize + ')';
+        return "(" + memoryMapIdx + ": " + (maxNumElems - numAvail) + '/' + maxNumElems +
+                ", offset: " + runOffset + ", length: " + pageSize + ", elemSize: " + elemSize + ')';
     }
 
     @Override
     public int maxNumElements() {
-        return maxNumElems;
+        if (chunk == null) {
+            // It's the head.
+            return 0;
+        }
+
+        synchronized (chunk.arena) {
+            return maxNumElems;
+        }
     }
 
     @Override
     public int numAvailable() {
-        return numAvail;
+        if (chunk == null) {
+            // It's the head.
+            return 0;
+        }
+
+        synchronized (chunk.arena) {
+            return numAvail;
+        }
     }
 
     @Override
     public int elementSize() {
-        return elemSize;
+        if (chunk == null) {
+            // It's the head.
+            return -1;
+        }
+
+        synchronized (chunk.arena) {
+            return elemSize;
+        }
     }
 
     @Override
     public int pageSize() {
         return pageSize;
+    }
+
+    void destroy() {
+        if (chunk != null) {
+            chunk.destroy();
+        }
     }
 }

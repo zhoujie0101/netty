@@ -19,7 +19,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
 /**
- * Web Socket frame containing binary data
+ * Web Socket frame containing binary data.
  */
 public class BinaryWebSocketFrame extends WebSocketFrame {
 
@@ -56,12 +56,22 @@ public class BinaryWebSocketFrame extends WebSocketFrame {
 
     @Override
     public BinaryWebSocketFrame copy() {
-        return new BinaryWebSocketFrame(isFinalFragment(), rsv(), content().copy());
+        return (BinaryWebSocketFrame) super.copy();
     }
 
     @Override
     public BinaryWebSocketFrame duplicate() {
-        return new BinaryWebSocketFrame(isFinalFragment(), rsv(), content().duplicate());
+        return (BinaryWebSocketFrame) super.duplicate();
+    }
+
+    @Override
+    public BinaryWebSocketFrame retainedDuplicate() {
+        return (BinaryWebSocketFrame) super.retainedDuplicate();
+    }
+
+    @Override
+    public BinaryWebSocketFrame replace(ByteBuf content) {
+        return new BinaryWebSocketFrame(isFinalFragment(), rsv(), content);
     }
 
     @Override

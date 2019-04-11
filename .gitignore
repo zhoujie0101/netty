@@ -30,3 +30,14 @@
 # JVM crash logs
 hs_err_pid*.log
 
+dependency-reduced-pom.xml
+
+*/.unison.*
+
+# exclude mainframer files
+mainframer
+.mainframer
+
+# exclude docker-sync stuff
+.docker-sync
+*/.docker-sync

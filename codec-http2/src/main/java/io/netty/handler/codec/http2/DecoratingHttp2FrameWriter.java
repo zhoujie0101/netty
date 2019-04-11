@@ -14,16 +14,18 @@
  */
 package io.netty.handler.codec.http2;
 
-import static io.netty.util.internal.ObjectUtil.checkNotNull;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import io.netty.util.internal.UnstableApi;
+
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
 
 /**
  * Decorator around another {@link Http2FrameWriter} instance.
  */
+@UnstableApi
 public class DecoratingHttp2FrameWriter implements Http2FrameWriter {
     private final Http2FrameWriter delegate;
 
@@ -74,7 +76,7 @@ public class DecoratingHttp2FrameWriter implements Http2FrameWriter {
     }
 
     @Override
-    public ChannelFuture writePing(ChannelHandlerContext ctx, boolean ack, ByteBuf data, ChannelPromise promise) {
+    public ChannelFuture writePing(ChannelHandlerContext ctx, boolean ack, long data, ChannelPromise promise) {
         return delegate.writePing(ctx, ack, data, promise);
     }
 

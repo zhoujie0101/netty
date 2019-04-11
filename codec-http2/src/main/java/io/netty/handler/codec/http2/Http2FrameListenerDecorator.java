@@ -17,10 +17,12 @@ package io.netty.handler.codec.http2;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.util.internal.UnstableApi;
 
 /**
  * Provides a decorator around a {@link Http2FrameListener} and delegates all method calls
  */
+@UnstableApi
 public class Http2FrameListenerDecorator implements Http2FrameListener {
     protected final Http2FrameListener listener;
 
@@ -68,12 +70,12 @@ public class Http2FrameListenerDecorator implements Http2FrameListener {
     }
 
     @Override
-    public void onPingRead(ChannelHandlerContext ctx, ByteBuf data) throws Http2Exception {
+    public void onPingRead(ChannelHandlerContext ctx, long data) throws Http2Exception {
         listener.onPingRead(ctx, data);
     }
 
     @Override
-    public void onPingAckRead(ChannelHandlerContext ctx, ByteBuf data) throws Http2Exception {
+    public void onPingAckRead(ChannelHandlerContext ctx, long data) throws Http2Exception {
         listener.onPingAckRead(ctx, data);
     }
 

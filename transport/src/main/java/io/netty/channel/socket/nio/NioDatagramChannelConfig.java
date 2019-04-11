@@ -16,17 +16,19 @@
 package io.netty.channel.socket.nio;
 
 import io.netty.channel.ChannelException;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.socket.DatagramChannelConfig;
 import io.netty.channel.socket.DefaultDatagramChannelConfig;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.SocketUtils;
 
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.nio.channels.DatagramChannel;
-import java.nio.channels.NetworkChannel;
 import java.util.Enumeration;
+import java.util.Map;
 
 /**
  * The default {@link NioDatagramChannelConfig} implementation.
@@ -78,16 +80,28 @@ class NioDatagramChannelConfig extends DefaultDatagramChannelConfig {
                 throw new Error("cannot locate the IP_MULTICAST_LOOP field", e);
             }
 
+            Class<?> networkChannelClass = null;
             try {
-                getOption = NetworkChannel.class.getDeclaredMethod("getOption", socketOptionType);
-            } catch (Exception e) {
-                throw new Error("cannot locate the getOption() method", e);
+                networkChannelClass = Class.forName("java.nio.channels.NetworkChannel", true, classLoader);
+            } catch (Throwable ignore) {
+                // Not Java 7+
             }
 
-            try {
-                setOption = NetworkChannel.class.getDeclaredMethod("setOption", socketOptionType, Object.class);
-            } catch (Exception e) {
-                throw new Error("cannot locate the setOption() method", e);
+            if (networkChannelClass == null) {
+                getOption = null;
+                setOption = null;
+            } else {
+                try {
+                    getOption = networkChannelClass.getDeclaredMethod("getOption", socketOptionType);
+                } catch (Exception e) {
+                    throw new Error("cannot locate the getOption() method", e);
+                }
+
+                try {
+                    setOption = networkChannelClass.getDeclaredMethod("setOption", socketOptionType, Object.class);
+                } catch (Exception e) {
+                    throw new Error("cannot locate the setOption() method", e);
+                }
             }
         }
         IP_MULTICAST_TTL = ipMulticastTtl;
@@ -118,15 +132,13 @@ class NioDatagramChannelConfig extends DefaultDatagramChannelConfig {
     @Override
     public InetAddress getInterface() {
         NetworkInterface inf = getNetworkInterface();
-        if (inf == null) {
-            return null;
-        } else {
-            Enumeration<InetAddress> addresses = inf.getInetAddresses();
+        if (inf != null) {
+            Enumeration<InetAddress> addresses = SocketUtils.addressesFromNetworkInterface(inf);
             if (addresses.hasMoreElements()) {
                 return addresses.nextElement();
             }
-            return null;
         }
+        return null;
     }
 
     @Override
@@ -169,11 +181,11 @@ class NioDatagramChannelConfig extends DefaultDatagramChannelConfig {
 
     @Override
     protected void autoReadCleared() {
-        ((NioDatagramChannel) channel).setReadPending(false);
+        ((NioDatagramChannel) channel).clearReadPending0();
     }
 
     private Object getOption0(Object option) {
-        if (PlatformDependent.javaVersion() < 7) {
+        if (GET_OPTION == null) {
             throw new UnsupportedOperationException();
         } else {
             try {
@@ -185,7 +197,7 @@ class NioDatagramChannelConfig extends DefaultDatagramChannelConfig {
     }
 
     private void setOption0(Object option, Object value) {
-        if (PlatformDependent.javaVersion() < 7) {
+        if (SET_OPTION == null) {
             throw new UnsupportedOperationException();
         } else {
             try {
@@ -196,4 +208,28 @@ class NioDatagramChannelConfig extends DefaultDatagramChannelConfig {
         }
     }
 
+    @Override
+    public <T> boolean setOption(ChannelOption<T> option, T value) {
+        if (PlatformDependent.javaVersion() >= 7 && option instanceof NioChannelOption) {
+            return NioChannelOption.setOption(javaChannel, (NioChannelOption<T>) option, value);
+        }
+        return super.setOption(option, value);
+    }
+
+    @Override
+    public <T> T getOption(ChannelOption<T> option) {
+        if (PlatformDependent.javaVersion() >= 7 && option instanceof NioChannelOption) {
+            return NioChannelOption.getOption(javaChannel, (NioChannelOption<T>) option);
+        }
+        return super.getOption(option);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public Map<ChannelOption<?>, Object> getOptions() {
+        if (PlatformDependent.javaVersion() >= 7) {
+            return getOptions(super.getOptions(), NioChannelOption.getOptions(javaChannel));
+        }
+        return super.getOptions();
+    }
 }

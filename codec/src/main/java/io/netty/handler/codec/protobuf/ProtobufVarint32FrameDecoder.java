@@ -15,18 +15,19 @@
  */
 package io.netty.handler.codec.protobuf;
 
-import java.io.IOException;
-import java.util.List;
-
+import com.google.protobuf.CodedInputStream;
+import com.google.protobuf.nano.CodedInputByteBufferNano;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.CorruptedFrameException;
 
+import java.util.List;
+
 /**
  * A decoder that splits the received {@link ByteBuf}s dynamically by the
  * value of the Google Protocol Buffers
- * <a href="http://code.google.com/apis/protocolbuffers/docs/encoding.html#varints">Base
+ * <a href="https://developers.google.com/protocol-buffers/docs/encoding#varints">Base
  * 128 Varints</a> integer length field in the message. For example:
  * <pre>
  * BEFORE DECODE (302 bytes)       AFTER DECODE (300 bytes)
@@ -36,7 +37,8 @@ import io.netty.handler.codec.CorruptedFrameException;
  * +--------+---------------+      +---------------+
  * </pre>
  *
- * @see {@link CodedInputStream } or {@link CodedInputByteBufferNano}
+ * @see CodedInputStream
+ * @see CodedInputByteBufferNano
  */
 public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
 
@@ -58,10 +60,8 @@ public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
 
         if (in.readableBytes() < length) {
             in.resetReaderIndex();
-            return;
         } else {
-            out.add(in.readBytes(length));
-            return;
+            out.add(in.readRetainedSlice(length));
         }
     }
 
@@ -69,9 +69,8 @@ public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
      * Reads variable length 32bit int from buffer
      *
      * @return decoded int if buffers readerIndex has been forwarded else nonsense value
-     * @throws IOException
      */
-    private static int readRawVarint32(ByteBuf buffer) throws IOException {
+    private static int readRawVarint32(ByteBuf buffer) {
         if (!buffer.isReadable()) {
             return 0;
         }

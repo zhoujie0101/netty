@@ -22,7 +22,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ReferenceCounted;
-import io.netty.util.internal.RecyclableArrayList;
+import io.netty.util.concurrent.PromiseCombiner;
 import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.TypeParameterMatcher;
 
@@ -79,10 +79,10 @@ public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerA
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        RecyclableArrayList out = null;
+        CodecOutputList out = null;
         try {
             if (acceptOutboundMessage(msg)) {
-                out = RecyclableArrayList.newInstance();
+                out = CodecOutputList.newInstance();
                 @SuppressWarnings("unchecked")
                 I cast = (I) msg;
                 try {
@@ -109,26 +109,34 @@ public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerA
             if (out != null) {
                 final int sizeMinusOne = out.size() - 1;
                 if (sizeMinusOne == 0) {
-                    ctx.write(out.get(0), promise);
+                    ctx.write(out.getUnsafe(0), promise);
                 } else if (sizeMinusOne > 0) {
                     // Check if we can use a voidPromise for our extra writes to reduce GC-Pressure
                     // See https://github.com/netty/netty/issues/2525
-                    ChannelPromise voidPromise = ctx.voidPromise();
-                    boolean isVoidPromise = promise == voidPromise;
-                    for (int i = 0; i < sizeMinusOne; i ++) {
-                        ChannelPromise p;
-                        if (isVoidPromise) {
-                            p = voidPromise;
-                        } else {
-                            p = ctx.newPromise();
-                        }
-                        ctx.write(out.get(i), p);
+                    if (promise == ctx.voidPromise()) {
+                        writeVoidPromise(ctx, out);
+                    } else {
+                        writePromiseCombiner(ctx, out, promise);
                     }
-                    ctx.write(out.get(sizeMinusOne), promise);
                 }
                 out.recycle();
             }
         }
+    }
+
+    private static void writeVoidPromise(ChannelHandlerContext ctx, CodecOutputList out) {
+        final ChannelPromise voidPromise = ctx.voidPromise();
+        for (int i = 0; i < out.size(); i++) {
+            ctx.write(out.getUnsafe(i), voidPromise);
+        }
+    }
+
+    private static void writePromiseCombiner(ChannelHandlerContext ctx, CodecOutputList out, ChannelPromise promise) {
+        final PromiseCombiner combiner = new PromiseCombiner(ctx.executor());
+        for (int i = 0; i < out.size(); i++) {
+            combiner.add(ctx.write(out.getUnsafe(i)));
+        }
+        combiner.finish(promise);
     }
 
     /**
@@ -138,8 +146,8 @@ public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerA
      * @param ctx           the {@link ChannelHandlerContext} which this {@link MessageToMessageEncoder} belongs to
      * @param msg           the message to encode to an other one
      * @param out           the {@link List} into which the encoded msg should be added
-     *                      needs to do some kind of aggragation
-     * @throws Exception    is thrown if an error accour
+     *                      needs to do some kind of aggregation
+     * @throws Exception    is thrown if an error occurs
      */
     protected abstract void encode(ChannelHandlerContext ctx, I msg, List<Object> out) throws Exception;
 }

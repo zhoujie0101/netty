@@ -16,7 +16,9 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.handler.codec.EmptyHeaders;
+import io.netty.util.internal.UnstableApi;
 
+@UnstableApi
 public final class EmptyHttp2Headers
         extends EmptyHeaders<CharSequence, CharSequence, Http2Headers> implements Http2Headers {
     public static final EmptyHttp2Headers INSTANCE = new EmptyHttp2Headers();
@@ -72,5 +74,10 @@ public final class EmptyHttp2Headers
     @Override
     public CharSequence status() {
         return get(PseudoHeaderName.STATUS.value());
+    }
+
+    @Override
+    public boolean contains(CharSequence name, CharSequence value, boolean caseInsensitive) {
+        return false;
     }
 }

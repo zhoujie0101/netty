@@ -33,9 +33,10 @@ import java.util.List;
  * {@link AbstractNioChannel} base class for {@link Channel}s that operate on messages.
  */
 public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
+    boolean inputShutdown;
 
     /**
-     * @see {@link AbstractNioChannel#AbstractNioChannel(Channel, SelectableChannel, int)}
+     * @see AbstractNioChannel#AbstractNioChannel(Channel, SelectableChannel, int)
      */
     protected AbstractNioMessageChannel(Channel parent, SelectableChannel ch, int readInterestOp) {
         super(parent, ch, readInterestOp);
@@ -46,6 +47,14 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
         return new NioMessageUnsafe();
     }
 
+    @Override
+    protected void doBeginRead() throws Exception {
+        if (inputShutdown) {
+            return;
+        }
+        super.doBeginRead();
+    }
+
     private final class NioMessageUnsafe extends AbstractNioUnsafe {
 
         private final List<Object> readBuf = new ArrayList<Object>();
@@ -54,12 +63,6 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
         public void read() {
             assert eventLoop().inEventLoop();
             final ChannelConfig config = config();
-            if (!config.isAutoRead() && !isReadPending()) {
-                // ChannelConfig.setAutoRead(false) was called in the meantime
-                removeReadOp();
-                return;
-            }
-
             final ChannelPipeline pipeline = pipeline();
             final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
             allocHandle.reset(config);
@@ -68,7 +71,6 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
             Throwable exception = null;
             try {
                 try {
-                    boolean needReadPendingReset = true;
                     do {
                         int localRead = doReadMessages(readBuf);
                         if (localRead == 0) {
@@ -80,10 +82,6 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                         }
 
                         allocHandle.incMessagesRead(localRead);
-                        if (needReadPendingReset) {
-                            needReadPendingReset = false;
-                            setReadPending(false);
-                        }
                     } while (allocHandle.continueReading());
                 } catch (Throwable t) {
                     exception = t;
@@ -91,6 +89,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
 
                 int size = readBuf.size();
                 for (int i = 0; i < size; i ++) {
+                    readPending = false;
                     pipeline.fireChannelRead(readBuf.get(i));
                 }
                 readBuf.clear();
@@ -98,17 +97,13 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 pipeline.fireChannelReadComplete();
 
                 if (exception != null) {
-                    if (exception instanceof IOException && !(exception instanceof PortUnreachableException)) {
-                        // ServerChannel should not be closed even on IOException because it can often continue
-                        // accepting incoming connections. (e.g. too many open files)
-                        closed = !(AbstractNioMessageChannel.this instanceof ServerChannel);
-                    }
+                    closed = closeOnReadError(exception);
 
                     pipeline.fireExceptionCaught(exception);
                 }
 
                 if (closed) {
-                    setInputShutdown();
+                    inputShutdown = true;
                     if (isOpen()) {
                         close(voidPromise());
                     }
@@ -120,7 +115,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 // * The user called Channel.read() or ChannelHandlerContext.read() in channelReadComplete(...) method
                 //
                 // See https://github.com/netty/netty/issues/2254
-                if (!config.isAutoRead() && !isReadPending()) {
+                if (!readPending && !config.isAutoRead()) {
                     removeReadOp();
                 }
             }
@@ -159,7 +154,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                     }
                     break;
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
                 if (continueOnWriteError()) {
                     in.remove(e);
                 } else {
@@ -174,6 +169,22 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
      */
     protected boolean continueOnWriteError() {
         return false;
+    }
+
+    protected boolean closeOnReadError(Throwable cause) {
+        if (!isActive()) {
+            // If the channel is not active anymore for whatever reason we should not try to continue reading.
+            return true;
+        }
+        if (cause instanceof PortUnreachableException) {
+            return false;
+        }
+        if (cause instanceof IOException) {
+            // ServerChannel should not be closed even on IOException because it can often continue
+            // accepting incoming connections. (e.g. too many open files)
+            return !(this instanceof ServerChannel);
+        }
+        return true;
     }
 
     /**

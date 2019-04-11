@@ -18,7 +18,7 @@ package io.netty.testsuite.transport.socket;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
@@ -33,7 +33,6 @@ import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.junit.Test;
@@ -50,9 +49,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
 @RunWith(Parameterized.class)
 public class SocketSslGreetingTest extends AbstractSocketTest {
@@ -62,7 +66,6 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
     private static final LogLevel LOG_LEVEL = LogLevel.TRACE;
     private static final File CERT_FILE;
     private static final File KEY_FILE;
-    private final ByteBuf greeting = ReferenceCountUtil.releaseLater(Unpooled.buffer().writeByte('a'));
 
     static {
         SelfSignedCertificate ssc;
@@ -75,7 +78,7 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
         KEY_FILE = ssc.privateKey();
     }
 
-    @Parameters(name = "{index}: serverEngine = {0}, clientEngine = {1}")
+    @Parameters(name = "{index}: serverEngine = {0}, clientEngine = {1}, delegate = {2}")
     public static Collection<Object[]> data() throws Exception {
         List<SslContext> serverContexts = new ArrayList<SslContext>();
         serverContexts.add(SslContextBuilder.forServer(CERT_FILE, KEY_FILE).sslProvider(SslProvider.JDK).build());
@@ -96,7 +99,8 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
         List<Object[]> params = new ArrayList<Object[]>();
         for (SslContext sc: serverContexts) {
             for (SslContext cc: clientContexts) {
-                params.add(new Object[] { sc, cc });
+                params.add(new Object[] { sc, cc, true });
+                params.add(new Object[] { sc, cc, false });
             }
         }
         return params;
@@ -104,10 +108,20 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
 
     private final SslContext serverCtx;
     private final SslContext clientCtx;
+    private final boolean delegate;
 
-    public SocketSslGreetingTest(SslContext serverCtx, SslContext clientCtx) {
+    public SocketSslGreetingTest(SslContext serverCtx, SslContext clientCtx, boolean delegate) {
         this.serverCtx = serverCtx;
         this.clientCtx = clientCtx;
+        this.delegate = delegate;
+    }
+
+    private static SslHandler newSslHandler(SslContext sslCtx, ByteBufAllocator allocator, Executor executor) {
+        if (executor == null) {
+            return sslCtx.newHandler(allocator);
+        } else {
+            return sslCtx.newHandler(allocator, executor);
+        }
     }
 
     // Test for https://github.com/netty/netty/pull/2437
@@ -120,57 +134,65 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
         final ServerHandler sh = new ServerHandler();
         final ClientHandler ch = new ClientHandler();
 
-        sb.childHandler(new ChannelInitializer<Channel>() {
-            @Override
-            public void initChannel(Channel sch) throws Exception {
-                ChannelPipeline p = sch.pipeline();
-                p.addLast(serverCtx.newHandler(sch.alloc()));
-                p.addLast(new LoggingHandler(LOG_LEVEL));
-                p.addLast(sh);
+        final ExecutorService executorService = delegate ? Executors.newCachedThreadPool() : null;
+        try {
+            sb.childHandler(new ChannelInitializer<Channel>() {
+                @Override
+                public void initChannel(Channel sch) throws Exception {
+                    ChannelPipeline p = sch.pipeline();
+                    p.addLast(newSslHandler(serverCtx, sch.alloc(), executorService));
+                    p.addLast(new LoggingHandler(LOG_LEVEL));
+                    p.addLast(sh);
+                }
+            });
+
+            cb.handler(new ChannelInitializer<Channel>() {
+                @Override
+                public void initChannel(Channel sch) throws Exception {
+                    ChannelPipeline p = sch.pipeline();
+                    p.addLast(newSslHandler(clientCtx, sch.alloc(), executorService));
+                    p.addLast(new LoggingHandler(LOG_LEVEL));
+                    p.addLast(ch);
+                }
+            });
+
+            Channel sc = sb.bind().sync().channel();
+            Channel cc = cb.connect(sc.localAddress()).sync().channel();
+
+            ch.latch.await();
+
+            sh.channel.close().awaitUninterruptibly();
+            cc.close().awaitUninterruptibly();
+            sc.close().awaitUninterruptibly();
+
+            if (sh.exception.get() != null && !(sh.exception.get() instanceof IOException)) {
+                throw sh.exception.get();
             }
-        });
-
-        cb.handler(new ChannelInitializer<Channel>() {
-            @Override
-            public void initChannel(Channel sch) throws Exception {
-                ChannelPipeline p = sch.pipeline();
-                p.addLast(clientCtx.newHandler(sch.alloc()));
-                p.addLast(new LoggingHandler(LOG_LEVEL));
-                p.addLast(ch);
+            if (ch.exception.get() != null && !(ch.exception.get() instanceof IOException)) {
+                throw ch.exception.get();
             }
-        });
-
-        Channel sc = sb.bind().sync().channel();
-        Channel cc = cb.connect().sync().channel();
-
-        ch.latch.await();
-
-        sh.channel.close().awaitUninterruptibly();
-        cc.close().awaitUninterruptibly();
-        sc.close().awaitUninterruptibly();
-
-        if (sh.exception.get() != null && !(sh.exception.get() instanceof IOException)) {
-            throw sh.exception.get();
-        }
-        if (ch.exception.get() != null && !(ch.exception.get() instanceof IOException)) {
-            throw ch.exception.get();
-        }
-        if (sh.exception.get() != null) {
-            throw sh.exception.get();
-        }
-        if (ch.exception.get() != null) {
-            throw ch.exception.get();
+            if (sh.exception.get() != null) {
+                throw sh.exception.get();
+            }
+            if (ch.exception.get() != null) {
+                throw ch.exception.get();
+            }
+        } finally {
+            if (executorService != null) {
+                executorService.shutdown();
+            }
         }
     }
 
-    private class ClientHandler extends SimpleChannelInboundHandler<ByteBuf> {
+    private static class ClientHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
         final AtomicReference<Throwable> exception = new AtomicReference<Throwable>();
         final CountDownLatch latch = new CountDownLatch(1);
 
         @Override
         public void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) throws Exception {
-            assertEquals(greeting, buf);
+            assertEquals('a', buf.readByte());
+            assertFalse(buf.isReadable());
             latch.countDown();
             ctx.close();
         }
@@ -187,7 +209,7 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
         }
     }
 
-    private class ServerHandler extends SimpleChannelInboundHandler<String> {
+    private static class ServerHandler extends SimpleChannelInboundHandler<String> {
         volatile Channel channel;
         final AtomicReference<Throwable> exception = new AtomicReference<Throwable>();
 
@@ -200,7 +222,7 @@ public class SocketSslGreetingTest extends AbstractSocketTest {
         public void channelActive(ChannelHandlerContext ctx)
                 throws Exception {
             channel = ctx.channel();
-            channel.writeAndFlush(greeting.duplicate().retain());
+            channel.writeAndFlush(ctx.alloc().buffer().writeByte('a'));
         }
 
         @Override

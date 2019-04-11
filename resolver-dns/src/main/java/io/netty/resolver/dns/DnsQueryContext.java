@@ -15,29 +15,32 @@
  */
 package io.netty.resolver.dns;
 
-import io.netty.buffer.Unpooled;
 import io.netty.channel.AddressedEnvelope;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.dns.DatagramDnsQuery;
-import io.netty.handler.codec.dns.DefaultDnsRawRecord;
+import io.netty.handler.codec.dns.AbstractDnsOptPseudoRrRecord;
 import io.netty.handler.codec.dns.DnsQuery;
 import io.netty.handler.codec.dns.DnsQuestion;
 import io.netty.handler.codec.dns.DnsRecord;
-import io.netty.handler.codec.dns.DnsRecordType;
 import io.netty.handler.codec.dns.DnsResponse;
 import io.netty.handler.codec.dns.DnsSection;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.FutureListener;
+import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.concurrent.ScheduledFuture;
-import io.netty.util.internal.OneTimeTask;
-import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
-final class DnsQueryContext {
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
+
+final class DnsQueryContext implements FutureListener<AddressedEnvelope<DnsResponse, InetSocketAddress>> {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DnsQueryContext.class);
 
@@ -45,6 +48,7 @@ final class DnsQueryContext {
     private final Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise;
     private final int id;
     private final DnsQuestion question;
+    private final DnsRecord[] additionals;
     private final DnsRecord optResource;
     private final InetSocketAddress nameServerAddr;
 
@@ -53,18 +57,25 @@ final class DnsQueryContext {
 
     DnsQueryContext(DnsNameResolver parent,
                     InetSocketAddress nameServerAddr,
-                    DnsQuestion question, Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise) {
+                    DnsQuestion question,
+                    DnsRecord[] additionals,
+                    Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise) {
 
-        this.parent = parent;
-        this.nameServerAddr = nameServerAddr;
-        this.question = question;
-        this.promise = promise;
+        this.parent = checkNotNull(parent, "parent");
+        this.nameServerAddr = checkNotNull(nameServerAddr, "nameServerAddr");
+        this.question = checkNotNull(question, "question");
+        this.additionals = checkNotNull(additionals, "additionals");
+        this.promise = checkNotNull(promise, "promise");
         recursionDesired = parent.isRecursionDesired();
         id = parent.queryContextManager.add(this);
 
+        // Ensure we remove the id from the QueryContextManager once the query completes.
+        promise.addListener(this);
+
         if (parent.isOptResourceEnabled()) {
-            optResource = new DefaultDnsRawRecord(
-                    StringUtil.EMPTY_STRING, DnsRecordType.OPT, parent.maxPayloadSize(), 0, Unpooled.EMPTY_BUFFER);
+            optResource = new AbstractDnsOptPseudoRrRecord(parent.maxPayloadSize(), 0, 0) {
+                // We may want to remove this in the future and let the user just specify the opt record in the query.
+            };
         } else {
             optResource = null;
         }
@@ -78,48 +89,61 @@ final class DnsQueryContext {
         return question;
     }
 
-    void query() {
+    void query(boolean flush, ChannelPromise writePromise) {
         final DnsQuestion question = question();
         final InetSocketAddress nameServerAddr = nameServerAddr();
         final DatagramDnsQuery query = new DatagramDnsQuery(null, nameServerAddr, id);
+
         query.setRecursionDesired(recursionDesired);
-        query.setRecord(DnsSection.QUESTION, question);
+
+        query.addRecord(DnsSection.QUESTION, question);
+
+        for (DnsRecord record: additionals) {
+            query.addRecord(DnsSection.ADDITIONAL, record);
+        }
+
         if (optResource != null) {
-            query.setRecord(DnsSection.ADDITIONAL, optResource);
+            query.addRecord(DnsSection.ADDITIONAL, optResource);
         }
 
         if (logger.isDebugEnabled()) {
             logger.debug("{} WRITE: [{}: {}], {}", parent.ch, id, nameServerAddr, question);
         }
 
-        sendQuery(query);
+        sendQuery(query, flush, writePromise);
     }
 
-    private void sendQuery(final DnsQuery query) {
-        if (parent.bindFuture.isDone()) {
-            writeQuery(query);
+    private void sendQuery(final DnsQuery query, final boolean flush, final ChannelPromise writePromise) {
+        if (parent.channelFuture.isDone()) {
+            writeQuery(query, flush, writePromise);
         } else {
-            parent.bindFuture.addListener(new ChannelFutureListener() {
+            parent.channelFuture.addListener(new GenericFutureListener<Future<? super Channel>>() {
                 @Override
-                public void operationComplete(ChannelFuture future) throws Exception {
+                public void operationComplete(Future<? super Channel> future) {
                     if (future.isSuccess()) {
-                        writeQuery(query);
+                        // If the query is done in a late fashion (as the channel was not ready yet) we always flush
+                        // to ensure we did not race with a previous flush() that was done when the Channel was not
+                        // ready yet.
+                        writeQuery(query, true, writePromise);
                     } else {
-                        promise.tryFailure(future.cause());
+                        Throwable cause = future.cause();
+                        promise.tryFailure(cause);
+                        writePromise.setFailure(cause);
                     }
                 }
             });
         }
     }
 
-    private void writeQuery(final DnsQuery query) {
-        final ChannelFuture writeFuture = parent.ch.writeAndFlush(query);
+    private void writeQuery(final DnsQuery query, final boolean flush, final ChannelPromise writePromise) {
+        final ChannelFuture writeFuture = flush ? parent.ch.writeAndFlush(query, writePromise) :
+                parent.ch.write(query, writePromise);
         if (writeFuture.isDone()) {
             onQueryWriteCompletion(writeFuture);
         } else {
             writeFuture.addListener(new ChannelFutureListener() {
                 @Override
-                public void operationComplete(ChannelFuture future) throws Exception {
+                public void operationComplete(ChannelFuture future) {
                     onQueryWriteCompletion(writeFuture);
                 }
             });
@@ -135,7 +159,7 @@ final class DnsQueryContext {
         // Schedule a query timeout task if necessary.
         final long queryTimeoutMillis = parent.queryTimeoutMillis();
         if (queryTimeoutMillis > 0) {
-            timeoutFuture = parent.ch.eventLoop().schedule(new OneTimeTask() {
+            timeoutFuture = parent.ch.eventLoop().schedule(new Runnable() {
                 @Override
                 public void run() {
                     if (promise.isDone()) {
@@ -165,26 +189,18 @@ final class DnsQueryContext {
     }
 
     private void setSuccess(AddressedEnvelope<? extends DnsResponse, InetSocketAddress> envelope) {
-        parent.queryContextManager.remove(nameServerAddr(), id);
-
-        // Cancel the timeout task.
-        final ScheduledFuture<?> timeoutFuture = this.timeoutFuture;
-        if (timeoutFuture != null) {
-            timeoutFuture.cancel(false);
-        }
-
         Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise = this.promise;
-        if (promise.setUncancellable()) {
-            @SuppressWarnings("unchecked")
-            AddressedEnvelope<DnsResponse, InetSocketAddress> castResponse =
-                    (AddressedEnvelope<DnsResponse, InetSocketAddress>) envelope.retain();
-            promise.setSuccess(castResponse);
+        @SuppressWarnings("unchecked")
+        AddressedEnvelope<DnsResponse, InetSocketAddress> castResponse =
+                (AddressedEnvelope<DnsResponse, InetSocketAddress>) envelope.retain();
+        if (!promise.trySuccess(castResponse)) {
+            // We failed to notify the promise as it was failed before, thus we need to release the envelope
+            envelope.release();
         }
     }
 
     private void setFailure(String message, Throwable cause) {
         final InetSocketAddress nameServerAddr = nameServerAddr();
-        parent.queryContextManager.remove(nameServerAddr, id);
 
         final StringBuilder buf = new StringBuilder(message.length() + 64);
         buf.append('[')
@@ -194,12 +210,27 @@ final class DnsQueryContext {
            .append(" (no stack trace available)");
 
         final DnsNameResolverException e;
-        if (cause != null) {
-            e = new DnsNameResolverException(nameServerAddr, question(), buf.toString(), cause);
+        if (cause == null) {
+            // This was caused by an timeout so use DnsNameResolverTimeoutException to allow the user to
+            // handle it special (like retry the query).
+            e = new DnsNameResolverTimeoutException(nameServerAddr, question(), buf.toString());
         } else {
-            e = new DnsNameResolverException(nameServerAddr, question(), buf.toString());
+            e = new DnsNameResolverException(nameServerAddr, question(), buf.toString(), cause);
+        }
+        promise.tryFailure(e);
+    }
+
+    @Override
+    public void operationComplete(Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> future) {
+        // Cancel the timeout task.
+        final ScheduledFuture<?> timeoutFuture = this.timeoutFuture;
+        if (timeoutFuture != null) {
+            this.timeoutFuture = null;
+            timeoutFuture.cancel(false);
         }
 
-        promise.tryFailure(e);
+        // Remove the id from the manager as soon as the query completes. This may be because of success, failure or
+        // cancellation
+        parent.queryContextManager.remove(nameServerAddr, id);
     }
 }

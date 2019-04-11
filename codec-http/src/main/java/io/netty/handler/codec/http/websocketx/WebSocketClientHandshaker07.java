@@ -91,13 +91,46 @@ public class WebSocketClientHandshaker07 extends WebSocketClientHandshaker {
      *            with the websocket specifications. Client applications that communicate with a non-standard server
      *            which doesn't require masking might set this to false to achieve a higher performance.
      * @param allowMaskMismatch
-     *            Allows to loosen the masking requirement on received frames. When this is set to false then also
-     *            frames which are not masked properly according to the standard will still be accepted.
+     *            When set to true, frames which are not masked properly according to the standard will still be
+     *            accepted.
+     */
+    public WebSocketClientHandshaker07(URI webSocketURL, WebSocketVersion version, String subprotocol,
+                                       boolean allowExtensions, HttpHeaders customHeaders, int maxFramePayloadLength,
+                                       boolean performMasking, boolean allowMaskMismatch) {
+        this(webSocketURL, version, subprotocol, allowExtensions, customHeaders, maxFramePayloadLength, performMasking,
+                allowMaskMismatch, DEFAULT_FORCE_CLOSE_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * Creates a new instance.
+     *
+     * @param webSocketURL
+     *            URL for web socket communications. e.g "ws://myhost.com/mypath". Subsequent web socket frames will be
+     *            sent to this URL.
+     * @param version
+     *            Version of web socket specification to use to connect to the server
+     * @param subprotocol
+     *            Sub protocol request sent to the server.
+     * @param allowExtensions
+     *            Allow extensions to be used in the reserved bits of the web socket frame
+     * @param customHeaders
+     *            Map of custom headers to add to the client request
+     * @param maxFramePayloadLength
+     *            Maximum length of a frame's payload
+     * @param performMasking
+     *            Whether to mask all written websocket frames. This must be set to true in order to be fully compatible
+     *            with the websocket specifications. Client applications that communicate with a non-standard server
+     *            which doesn't require masking might set this to false to achieve a higher performance.
+     * @param allowMaskMismatch
+     *            When set to true, frames which are not masked properly according to the standard will still be
+     *            accepted
+     * @param forceCloseTimeoutMillis
+     *            Close the connection if it was not closed by the server after timeout specified.
      */
     public WebSocketClientHandshaker07(URI webSocketURL, WebSocketVersion version, String subprotocol,
             boolean allowExtensions, HttpHeaders customHeaders, int maxFramePayloadLength,
-            boolean performMasking, boolean allowMaskMismatch) {
-        super(webSocketURL, version, subprotocol, customHeaders, maxFramePayloadLength);
+            boolean performMasking, boolean allowMaskMismatch, long forceCloseTimeoutMillis) {
+        super(webSocketURL, version, subprotocol, customHeaders, maxFramePayloadLength, forceCloseTimeoutMillis);
         this.allowExtensions = allowExtensions;
         this.performMasking = performMasking;
         this.allowMaskMismatch = allowMaskMismatch;
@@ -145,30 +178,22 @@ public class WebSocketClientHandshaker07 extends WebSocketClientHandshaker {
         FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, path);
         HttpHeaders headers = request.headers();
 
-        headers.add(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
-               .add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
-               .add(HttpHeaderNames.SEC_WEBSOCKET_KEY, key)
-               .add(HttpHeaderNames.HOST, wsURL.getHost());
-
-        int wsPort = wsURL.getPort();
-        String originValue = "http://" + wsURL.getHost();
-        if (wsPort != 80 && wsPort != 443) {
-            // if the port is not standard (80/443) its needed to add the port to the header.
-            // See http://tools.ietf.org/html/rfc6454#section-6.2
-            originValue = originValue + ':' + wsPort;
-        }
-        headers.add(HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, originValue);
-
-        String expectedSubprotocol = expectedSubprotocol();
-        if (expectedSubprotocol != null && !expectedSubprotocol.isEmpty()) {
-            headers.add(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, expectedSubprotocol);
-        }
-
-        headers.add(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "7");
-
         if (customHeaders != null) {
             headers.add(customHeaders);
         }
+
+        headers.set(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
+               .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+               .set(HttpHeaderNames.SEC_WEBSOCKET_KEY, key)
+               .set(HttpHeaderNames.HOST, websocketHostValue(wsURL))
+               .set(HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, websocketOriginValue(wsURL));
+
+        String expectedSubprotocol = expectedSubprotocol();
+        if (expectedSubprotocol != null && !expectedSubprotocol.isEmpty()) {
+            headers.set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, expectedSubprotocol);
+        }
+
+        headers.set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "7");
         return request;
     }
 
@@ -203,9 +228,9 @@ public class WebSocketClientHandshaker07 extends WebSocketClientHandshaker {
             throw new WebSocketHandshakeException("Invalid handshake response upgrade: " + upgrade);
         }
 
-        CharSequence connection = headers.get(HttpHeaderNames.CONNECTION);
-        if (!HttpHeaderValues.UPGRADE.contentEqualsIgnoreCase(connection)) {
-            throw new WebSocketHandshakeException("Invalid handshake response connection: " + connection);
+        if (!headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE, true)) {
+            throw new WebSocketHandshakeException("Invalid handshake response connection: "
+                    + headers.get(HttpHeaderNames.CONNECTION));
         }
 
         CharSequence accept = headers.get(HttpHeaderNames.SEC_WEBSOCKET_ACCEPT);
@@ -224,4 +249,11 @@ public class WebSocketClientHandshaker07 extends WebSocketClientHandshaker {
     protected WebSocketFrameEncoder newWebSocketEncoder() {
         return new WebSocket07FrameEncoder(performMasking);
     }
+
+    @Override
+    public WebSocketClientHandshaker07 setForceCloseTimeoutMillis(long forceCloseTimeoutMillis) {
+        super.setForceCloseTimeoutMillis(forceCloseTimeoutMillis);
+        return this;
+    }
+
 }

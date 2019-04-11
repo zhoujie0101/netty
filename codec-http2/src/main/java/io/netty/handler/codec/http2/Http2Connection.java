@@ -16,10 +16,14 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.Promise;
+import io.netty.util.internal.UnstableApi;
 
 /**
  * Manager for the state of an HTTP/2 connection with the remote end-point.
  */
+@UnstableApi
 public interface Http2Connection {
     /**
      * Listener for life-cycle events for streams in this connection.
@@ -73,41 +77,6 @@ public interface Http2Connection {
         void onStreamRemoved(Http2Stream stream);
 
         /**
-         * Notifies the listener that a priority tree parent change has occurred. This method will be invoked
-         * in a top down order relative to the priority tree. This method will also be invoked after all tree
-         * structure changes have been made and the tree is in steady state relative to the priority change
-         * which caused the tree structure to change.
-         * <p>
-         * If a {@link RuntimeException} is thrown it will be logged and <strong>not propagated</strong>.
-         * Throwing from this method is not supported and is considered a programming error.
-         * @param stream The stream which had a parent change (new parent and children will be steady state)
-         * @param oldParent The old parent which {@code stream} used to be a child of (may be {@code null})
-         */
-        void onPriorityTreeParentChanged(Http2Stream stream, Http2Stream oldParent);
-
-        /**
-         * Notifies the listener that a parent dependency is about to change
-         * This is called while the tree is being restructured and so the tree
-         * structure is not necessarily steady state.
-         * <p>
-         * If a {@link RuntimeException} is thrown it will be logged and <strong>not propagated</strong>.
-         * Throwing from this method is not supported and is considered a programming error.
-         * @param stream The stream which the parent is about to change to {@code newParent}
-         * @param newParent The stream which will be the parent of {@code stream}
-         */
-        void onPriorityTreeParentChanging(Http2Stream stream, Http2Stream newParent);
-
-        /**
-         * Notifies the listener that the weight has changed for {@code stream}.
-         * <p>
-         * If a {@link RuntimeException} is thrown it will be logged and <strong>not propagated</strong>.
-         * Throwing from this method is not supported and is considered a programming error.
-         * @param stream The stream which the weight has changed
-         * @param oldWeight The old weight for {@code stream}
-         */
-        void onWeightChanged(Http2Stream stream, short oldWeight);
-
-        /**
          * Called when a {@code GOAWAY} frame was sent for the connection.
          * <p>
          * If a {@link RuntimeException} is thrown it will be logged and <strong>not propagated</strong>.
@@ -138,12 +107,11 @@ public interface Http2Connection {
      * A view of the connection from one endpoint (local or remote).
      */
     interface Endpoint<F extends Http2FlowController> {
-
         /**
-         * Returns the next valid streamId for this endpoint. If negative, the stream IDs are
+         * Increment and get the next generated stream id this endpoint. If negative, the stream IDs are
          * exhausted for this endpoint an no further streams may be created.
          */
-        int nextStreamId();
+        int incrementAndGetNextStreamId();
 
         /**
          * Indicates whether the given streamId is from the set of IDs used by this endpoint to
@@ -163,13 +131,6 @@ public interface Http2Connection {
         boolean created(Http2Stream stream);
 
         /**
-         * Indicates whether or not the stream IDs for this endpoint have been exhausted
-         * (i.e. {@link #nextStreamId()} < 0). If {@code true}, any attempt to create new streams
-         * on this endpoint will fail.
-         */
-        boolean isExhausted();
-
-        /**
          * Indicates whether or a stream created by this endpoint can be opened without violating
          * {@link #maxActiveStreams()}.
          */
@@ -180,33 +141,12 @@ public interface Http2Connection {
          * <ul>
          * <li>The requested stream ID is not the next sequential ID for this endpoint.</li>
          * <li>The stream already exists.</li>
-         * <li>The connection is marked as going away.</li>
-         * </ul>
-         * <p>
-         * Note that IDLE streams can always be created so long as there are stream IDs available.
-         * The {@link #numActiveStreams()} will be enforced upon attempting to open the stream.
-         * <p>
-         * If the stream is intended to initialized to {@link Http2Stream.State#OPEN} then use
-         * {@link #createStream(int, boolean)} otherwise optimizations in {@link Listener}s may not work
-         * and memory may be thrashed. The caller is expected to {@link Http2Stream#open(boolean)} the stream.
-         * @param streamId The ID of the stream
-         * @see Http2Stream#open(boolean)
-         */
-        Http2Stream createIdleStream(int streamId) throws Http2Exception;
-
-        /**
-         * Creates a stream initiated by this endpoint. This could fail for the following reasons:
-         * <ul>
-         * <li>The requested stream ID is not the next sequential ID for this endpoint.</li>
-         * <li>The stream already exists.</li>
-         * <li>{@link #isExhausted()} is {@code true}</li>
          * <li>{@link #canOpenStream()} is {@code false}.</li>
          * <li>The connection is marked as going away.</li>
          * </ul>
          * <p>
-         * This method differs from {@link #createIdleStream(int)} because the initial state of the stream will be
-         * Immediately set before notifying {@link Listener}s. The state transition is sensitive to {@code halfClosed}
-         * and is defined by {@link Http2Stream#open(boolean)}.
+         * The initial state of the stream will be immediately set before notifying {@link Listener}s. The state
+         * transition is sensitive to {@code halfClosed} and is defined by {@link Http2Stream#open(boolean)}.
          * @param streamId The ID of the stream
          * @param halfClosed see {@link Http2Stream#open(boolean)}.
          * @see Http2Stream#open(boolean)
@@ -237,12 +177,15 @@ public interface Http2Connection {
         boolean isServer();
 
         /**
-         * Sets whether server push is allowed to this endpoint.
+         * This is the <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">SETTINGS_ENABLE_PUSH</a> value sent
+         * from the opposite endpoint. This method should only be called by Netty (not users) as a result of a
+         * receiving a {@code SETTINGS} frame.
          */
         void allowPushTo(boolean allow);
 
         /**
-         * Gets whether or not server push is allowed to this endpoint. This is always false
+         * This is the <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">SETTINGS_ENABLE_PUSH</a> value sent
+         * from the opposite endpoint. The initial value must be {@code true} for the client endpoint and always false
          * for a server endpoint.
          */
         boolean allowPushTo();
@@ -255,15 +198,20 @@ public interface Http2Connection {
 
         /**
          * Gets the maximum number of streams (created by this endpoint) that are allowed to be active at
-         * the same time. This is the {@code SETTINGS_MAX_CONCURRENT_STREAMS} value sent from the opposite endpoint to
-         * restrict stream creation by this endpoint.
+         * the same time. This is the
+         * <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">SETTINGS_MAX_CONCURRENT_STREAMS</a>
+         * value sent from the opposite endpoint to restrict stream creation by this endpoint.
+         * <p>
+         * The default value returned by this method must be "unlimited".
          */
         int maxActiveStreams();
 
         /**
-         * Sets the maximum number of streams (created by this endpoint) that are allowed to be active at once.
-         * This is the {@code SETTINGS_MAX_CONCURRENT_STREAMS} value sent from the opposite endpoint to
-         * restrict stream creation by this endpoint.
+         * Sets the limit for {@code SETTINGS_MAX_CONCURRENT_STREAMS}.
+         * @param maxActiveStreams The maximum number of streams (created by this endpoint) that are allowed to be
+         * active at once. This is the
+         * <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">SETTINGS_MAX_CONCURRENT_STREAMS</a> value sent
+         * from the opposite endpoint to restrict stream creation by this endpoint.
          */
         void maxActiveStreams(int maxActiveStreams);
 
@@ -301,6 +249,16 @@ public interface Http2Connection {
     }
 
     /**
+     * Close this connection. No more new streams can be created after this point and
+     * all streams that exists (active or otherwise) will be closed and removed.
+     * <p>Note if iterating active streams via {@link #forEachActiveStream(Http2StreamVisitor)} and an exception is
+     * thrown it is necessary to call this method again to ensure the close completes.
+     * @param promise Will be completed when all streams have been removed, and listeners have been notified.
+     * @return A future that will be completed when all streams have been removed, and listeners have been notified.
+     */
+    Future<Void> close(Promise<Void> promise);
+
+    /**
      * Creates a new key that is unique within this {@link Http2Connection}.
      */
     PropertyKey newKey();
@@ -312,7 +270,7 @@ public interface Http2Connection {
 
     /**
      * Removes a listener of stream life-cycle events. If the same listener was added multiple times
-     * then only the first occurence gets removed.
+     * then only the first occurrence gets removed.
      */
     void removeListener(Listener listener);
 
@@ -368,8 +326,15 @@ public interface Http2Connection {
 
     /**
      * Indicates that a {@code GOAWAY} was received from the remote endpoint and sets the last known stream.
+     * @param lastKnownStream The Last-Stream-ID in the
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame.
+     * @param errorCode the Error Code in the
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame.
+     * @param message The Additional Debug Data in the
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame. Note that reference count ownership
+     * belongs to the caller (ownership is not transferred to this method).
      */
-    void goAwayReceived(int lastKnownStream, long errorCode, ByteBuf message);
+    void goAwayReceived(int lastKnownStream, long errorCode, ByteBuf message) throws Http2Exception;
 
     /**
      * Indicates whether or not a {@code GOAWAY} was sent to the remote endpoint.
@@ -377,7 +342,15 @@ public interface Http2Connection {
     boolean goAwaySent();
 
     /**
-     * Indicates that a {@code GOAWAY} was sent to the remote endpoint and sets the last known stream.
+     * Updates the local state of this {@link Http2Connection} as a result of a {@code GOAWAY} to send to the remote
+     * endpoint.
+     * @param lastKnownStream The Last-Stream-ID in the
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame.
+     * @param errorCode the Error Code in the
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame.
+     * <a href="https://tools.ietf.org/html/rfc7540#section-6.8">GOAWAY</a> frame. Note that reference count ownership
+     * belongs to the caller (ownership is not transferred to this method).
+     * @return {@code true} if the corresponding {@code GOAWAY} frame should be sent to the remote endpoint.
      */
-    void goAwaySent(int lastKnownStream, long errorCode, ByteBuf message);
+    boolean goAwaySent(int lastKnownStream, long errorCode, ByteBuf message) throws Http2Exception;
 }

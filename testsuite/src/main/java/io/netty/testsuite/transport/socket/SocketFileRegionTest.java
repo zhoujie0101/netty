@@ -22,17 +22,20 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandler;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.DefaultFileRegion;
 import io.netty.channel.FileRegion;
 import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.util.internal.ThreadLocalRandom;
+import io.netty.util.internal.PlatformDependent;
+import org.hamcrest.CoreMatchers;
 import org.junit.Test;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.channels.WritableByteChannel;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -44,11 +47,16 @@ public class SocketFileRegionTest extends AbstractSocketTest {
     static final byte[] data = new byte[1048576 * 10];
 
     static {
-        ThreadLocalRandom.current().nextBytes(data);
+        PlatformDependent.threadLocalRandom().nextBytes(data);
     }
 
     @Test
     public void testFileRegion() throws Throwable {
+        run();
+    }
+
+    @Test
+    public void testCustomFileRegion() throws Throwable {
         run();
     }
 
@@ -67,24 +75,62 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         run();
     }
 
+    @Test
+    public void testFileRegionCountLargerThenFile() throws Throwable {
+        run();
+    }
+
     public void testFileRegion(ServerBootstrap sb, Bootstrap cb) throws Throwable {
-        testFileRegion0(sb, cb, false, true);
+        testFileRegion0(sb, cb, false, true, true);
+    }
+
+    public void testCustomFileRegion(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+        testFileRegion0(sb, cb, false, true, false);
     }
 
     public void testFileRegionVoidPromise(ServerBootstrap sb, Bootstrap cb) throws Throwable {
-        testFileRegion0(sb, cb, true, true);
+        testFileRegion0(sb, cb, true, true, true);
     }
 
     public void testFileRegionNotAutoRead(ServerBootstrap sb, Bootstrap cb) throws Throwable {
-        testFileRegion0(sb, cb, false, false);
+        testFileRegion0(sb, cb, false, false, true);
     }
 
     public void testFileRegionVoidPromiseNotAutoRead(ServerBootstrap sb, Bootstrap cb) throws Throwable {
-        testFileRegion0(sb, cb, true, false);
+        testFileRegion0(sb, cb, true, false, true);
+    }
+
+    public void testFileRegionCountLargerThenFile(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+        File file = File.createTempFile("netty-", ".tmp");
+        file.deleteOnExit();
+
+        final FileOutputStream out = new FileOutputStream(file);
+        out.write(data);
+        out.close();
+
+        sb.childHandler(new SimpleChannelInboundHandler<ByteBuf>() {
+            @Override
+            protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+                // Just drop the message.
+            }
+        });
+        cb.handler(new ChannelInboundHandlerAdapter());
+
+        Channel sc = sb.bind().sync().channel();
+        Channel cc = cb.connect(sc.localAddress()).sync().channel();
+
+        // Request file region which is bigger then the underlying file.
+        FileRegion region = new DefaultFileRegion(
+                new FileInputStream(file).getChannel(), 0, data.length + 1024);
+
+        assertThat(cc.writeAndFlush(region).await().cause(), CoreMatchers.<Throwable>instanceOf(IOException.class));
+        cc.close().sync();
+        sc.close().sync();
     }
 
     private static void testFileRegion0(
-            ServerBootstrap sb, Bootstrap cb, boolean voidPromise, final boolean autoRead) throws Throwable {
+            ServerBootstrap sb, Bootstrap cb, boolean voidPromise, final boolean autoRead, boolean defaultFileRegion)
+            throws Throwable {
         sb.childOption(ChannelOption.AUTO_READ, autoRead);
         cb.option(ChannelOption.AUTO_READ, autoRead);
 
@@ -93,7 +139,7 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         file.deleteOnExit();
 
         final FileOutputStream out = new FileOutputStream(file);
-        final Random random = ThreadLocalRandom.current();
+        final Random random = PlatformDependent.threadLocalRandom();
 
         // Prepend random data which will not be transferred, so that we can test non-zero start offset
         final int startOffset = random.nextInt(8192);
@@ -135,11 +181,15 @@ public class SocketFileRegionTest extends AbstractSocketTest {
 
         Channel sc = sb.bind().sync().channel();
 
-        Channel cc = cb.connect().sync().channel();
+        Channel cc = cb.connect(sc.localAddress()).sync().channel();
         FileRegion region = new DefaultFileRegion(
                 new FileInputStream(file).getChannel(), startOffset, data.length - bufferSize);
         FileRegion emptyRegion = new DefaultFileRegion(new FileInputStream(file).getChannel(), 0, 0);
 
+        if (!defaultFileRegion) {
+            region = new FileRegionWrapper(region);
+            emptyRegion = new FileRegionWrapper(emptyRegion);
+        }
         // Do write ByteBuf and then FileRegion to ensure that mixed writes work
         // Also, write an empty FileRegion to test if writing an empty FileRegion does not cause any issues.
         //
@@ -227,6 +277,79 @@ public class SocketFileRegionTest extends AbstractSocketTest {
             if (exception.compareAndSet(null, cause)) {
                 ctx.close();
             }
+        }
+    }
+
+    private static final class FileRegionWrapper implements FileRegion {
+        private final FileRegion region;
+
+        FileRegionWrapper(FileRegion region) {
+            this.region = region;
+        }
+
+        @Override
+        public int refCnt() {
+            return region.refCnt();
+        }
+
+        @Override
+        public long position() {
+            return region.position();
+        }
+
+        @Override
+        @Deprecated
+        public long transfered() {
+            return region.transferred();
+        }
+
+        @Override
+        public boolean release() {
+            return region.release();
+        }
+
+        @Override
+        public long transferred() {
+            return region.transferred();
+        }
+
+        @Override
+        public long count() {
+            return region.count();
+        }
+
+        @Override
+        public boolean release(int decrement) {
+            return region.release(decrement);
+        }
+
+        @Override
+        public long transferTo(WritableByteChannel target, long position) throws IOException {
+            return region.transferTo(target, position);
+        }
+
+        @Override
+        public FileRegion retain() {
+            region.retain();
+            return this;
+        }
+
+        @Override
+        public FileRegion retain(int increment) {
+            region.retain(increment);
+            return this;
+        }
+
+        @Override
+        public FileRegion touch() {
+            region.touch();
+            return this;
+        }
+
+        @Override
+        public FileRegion touch(Object hint) {
+            region.touch(hint);
+            return this;
         }
     }
 }

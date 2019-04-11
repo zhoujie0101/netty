@@ -20,6 +20,7 @@ import io.netty.handler.codec.memcache.AbstractMemcacheObjectAggregator;
 import io.netty.handler.codec.memcache.FullMemcacheMessage;
 import io.netty.handler.codec.memcache.MemcacheContent;
 import io.netty.handler.codec.memcache.MemcacheObject;
+import io.netty.util.internal.UnstableApi;
 
 /**
  * An object aggregator for the memcache binary protocol.
@@ -27,6 +28,7 @@ import io.netty.handler.codec.memcache.MemcacheObject;
  * It aggregates {@link BinaryMemcacheMessage}s and {@link MemcacheContent} into {@link FullBinaryMemcacheRequest}s
  * or {@link FullBinaryMemcacheResponse}s.
  */
+@UnstableApi
 public class BinaryMemcacheObjectAggregator extends AbstractMemcacheObjectAggregator<BinaryMemcacheMessage> {
 
     public BinaryMemcacheObjectAggregator(int maxContentLength) {
@@ -53,8 +55,10 @@ public class BinaryMemcacheObjectAggregator extends AbstractMemcacheObjectAggreg
     }
 
     private static FullBinaryMemcacheRequest toFullRequest(BinaryMemcacheRequest request, ByteBuf content) {
-        FullBinaryMemcacheRequest fullRequest =
-                new DefaultFullBinaryMemcacheRequest(request.key(), request.extras(), content);
+        ByteBuf key = request.key() == null ? null : request.key().retain();
+        ByteBuf extras = request.extras() == null ? null : request.extras().retain();
+        DefaultFullBinaryMemcacheRequest fullRequest =
+                new DefaultFullBinaryMemcacheRequest(key, extras, content);
 
         fullRequest.setMagic(request.magic());
         fullRequest.setOpcode(request.opcode());
@@ -70,8 +74,10 @@ public class BinaryMemcacheObjectAggregator extends AbstractMemcacheObjectAggreg
     }
 
     private static FullBinaryMemcacheResponse toFullResponse(BinaryMemcacheResponse response, ByteBuf content) {
-        FullBinaryMemcacheResponse fullResponse =
-                new DefaultFullBinaryMemcacheResponse(response.key(), response.extras(), content);
+        ByteBuf key = response.key() == null ? null : response.key().retain();
+        ByteBuf extras = response.extras() == null ? null : response.extras().retain();
+        DefaultFullBinaryMemcacheResponse fullResponse =
+                new DefaultFullBinaryMemcacheResponse(key, extras, content);
 
         fullResponse.setMagic(response.magic());
         fullResponse.setOpcode(response.opcode());

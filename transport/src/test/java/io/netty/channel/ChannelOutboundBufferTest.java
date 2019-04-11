@@ -19,10 +19,16 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.CharsetUtil;
+import io.netty.util.concurrent.DefaultThreadFactory;
+import io.netty.util.concurrent.RejectedExecutionHandlers;
+import io.netty.util.concurrent.SingleThreadEventExecutor;
 import org.junit.Test;
 
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.util.Queue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 
 import static io.netty.buffer.Unpooled.*;
 import static org.hamcrest.Matchers.*;
@@ -52,7 +58,7 @@ public class ChannelOutboundBufferTest {
         assertEquals(0, buffer.nioBufferCount());
 
         ByteBuf buf = copiedBuffer("buf1", CharsetUtil.US_ASCII);
-        ByteBuffer nioBuf = buf.internalNioBuffer(0, buf.readableBytes());
+        ByteBuffer nioBuf = buf.internalNioBuffer(buf.readerIndex(), buf.readableBytes());
         buffer.addMessage(buf, buf.readableBytes(), channel.voidPromise());
         assertEquals("Should still be 0 as not flushed yet", 0, buffer.nioBufferCount());
         buffer.addFlush();
@@ -84,7 +90,7 @@ public class ChannelOutboundBufferTest {
         ByteBuffer[] buffers = buffer.nioBuffers();
         assertEquals(64, buffer.nioBufferCount());
         for (int i = 0;  i < buffer.nioBufferCount(); i++) {
-            assertEquals(buffers[i], buf.internalNioBuffer(0, buf.readableBytes()));
+            assertEquals(buffers[i], buf.internalNioBuffer(buf.readerIndex(), buf.readableBytes()));
         }
         release(buffer);
         buf.release();
@@ -99,7 +105,7 @@ public class ChannelOutboundBufferTest {
         CompositeByteBuf comp = compositeBuffer(256);
         ByteBuf buf = directBuffer().writeBytes("buf1".getBytes(CharsetUtil.US_ASCII));
         for (int i = 0; i < 65; i++) {
-            comp.addComponent(buf.copy()).writerIndex(comp.writerIndex() + buf.readableBytes());
+            comp.addComponent(true, buf.copy());
         }
         buffer.addMessage(comp, comp.readableBytes(), channel.voidPromise());
 
@@ -109,7 +115,7 @@ public class ChannelOutboundBufferTest {
         assertEquals(65, buffer.nioBufferCount());
         for (int i = 0;  i < buffer.nioBufferCount(); i++) {
             if (i < 65) {
-                assertEquals(buffers[i], buf.internalNioBuffer(0, buf.readableBytes()));
+                assertEquals(buffers[i], buf.internalNioBuffer(buf.readerIndex(), buf.readableBytes()));
             } else {
                 assertNull(buffers[i]);
             }
@@ -218,22 +224,25 @@ public class ChannelOutboundBufferTest {
             }
         });
 
-        ch.config().setWriteBufferLowWaterMark(128);
-        ch.config().setWriteBufferHighWaterMark(256);
+        ch.config().setWriteBufferLowWaterMark(128 + ChannelOutboundBuffer.CHANNEL_OUTBOUND_BUFFER_ENTRY_OVERHEAD);
+        ch.config().setWriteBufferHighWaterMark(256 + ChannelOutboundBuffer.CHANNEL_OUTBOUND_BUFFER_ENTRY_OVERHEAD);
 
-        // Ensure exceeding the low watermark does not make channel unwritable.
         ch.write(buffer().writeZero(128));
+        // Ensure exceeding the low watermark does not make channel unwritable.
+        ch.write(buffer().writeZero(2));
         assertThat(buf.toString(), is(""));
 
         ch.unsafe().outboundBuffer().addFlush();
 
         // Ensure exceeding the high watermark makes channel unwritable.
-        ch.write(buffer().writeZero(128));
+        ch.write(buffer().writeZero(127));
         assertThat(buf.toString(), is("false "));
 
         // Ensure going down to the low watermark makes channel writable again by flushing the first write.
         assertThat(ch.unsafe().outboundBuffer().remove(), is(true));
-        assertThat(ch.unsafe().outboundBuffer().totalPendingWriteBytes(), is(128L));
+        assertThat(ch.unsafe().outboundBuffer().remove(), is(true));
+        assertThat(ch.unsafe().outboundBuffer().totalPendingWriteBytes(),
+                is(127L + ChannelOutboundBuffer.CHANNEL_OUTBOUND_BUFFER_ENTRY_OVERHEAD));
         assertThat(buf.toString(), is("false true "));
 
         safeClose(ch);
@@ -330,7 +339,7 @@ public class ChannelOutboundBufferTest {
         ChannelOutboundBuffer cob = ch.unsafe().outboundBuffer();
 
         // Trigger channelWritabilityChanged() by writing a lot.
-        ch.write(buffer().writeZero(256));
+        ch.write(buffer().writeZero(257));
         assertThat(buf.toString(), is("false "));
 
         // Ensure that setting a user-defined writability flag to false does not trigger channelWritabilityChanged()
@@ -338,7 +347,7 @@ public class ChannelOutboundBufferTest {
         ch.runPendingTasks();
         assertThat(buf.toString(), is("false "));
 
-        // Ensure reducing the totalPendingWriteBytes down to zero does not trigger channelWritabilityChannged()
+        // Ensure reducing the totalPendingWriteBytes down to zero does not trigger channelWritabilityChanged()
         // because of the user-defined writability flag.
         ch.flush();
         assertThat(cob.totalPendingWriteBytes(), is(0L));
@@ -350,6 +359,103 @@ public class ChannelOutboundBufferTest {
         assertThat(buf.toString(), is("false true "));
 
         safeClose(ch);
+    }
+
+    @Test(timeout = 5000)
+    public void testWriteTaskRejected() throws Exception {
+        final SingleThreadEventExecutor executor = new SingleThreadEventExecutor(
+                null, new DefaultThreadFactory("executorPool"),
+                true, 1, RejectedExecutionHandlers.reject()) {
+            @Override
+            protected void run() {
+                do {
+                    Runnable task = takeTask();
+                    if (task != null) {
+                        task.run();
+                        updateLastExecutionTime();
+                    }
+                } while (!confirmShutdown());
+            }
+
+            @Override
+            protected Queue<Runnable> newTaskQueue(int maxPendingTasks) {
+                return super.newTaskQueue(1);
+            }
+        };
+        final CountDownLatch handlerAddedLatch = new CountDownLatch(1);
+        final CountDownLatch handlerRemovedLatch = new CountDownLatch(1);
+        EmbeddedChannel ch = new EmbeddedChannel();
+        ch.pipeline().addLast(executor, "handler", new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+                promise.setFailure(new AssertionError("Should not be called"));
+            }
+
+            @Override
+            public void handlerAdded(ChannelHandlerContext ctx) {
+                handlerAddedLatch.countDown();
+            }
+
+            @Override
+            public void handlerRemoved(ChannelHandlerContext ctx) {
+                handlerRemovedLatch.countDown();
+            }
+        });
+
+        // Lets wait until we are sure the handler was added.
+        handlerAddedLatch.await();
+
+        final CountDownLatch executeLatch = new CountDownLatch(1);
+        final CountDownLatch runLatch = new CountDownLatch(1);
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    runLatch.countDown();
+                    executeLatch.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        runLatch.await();
+
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                // Will not be executed but ensure the pending count is 1.
+            }
+        });
+
+        assertEquals(1, executor.pendingTasks());
+        assertEquals(0, ch.unsafe().outboundBuffer().totalPendingWriteBytes());
+
+        ByteBuf buffer = buffer(128).writeZero(128);
+        ChannelFuture future = ch.write(buffer);
+        ch.runPendingTasks();
+
+        assertTrue(future.cause() instanceof RejectedExecutionException);
+        assertEquals(0, buffer.refCnt());
+
+        // In case of rejected task we should not have anything pending.
+        assertEquals(0, ch.unsafe().outboundBuffer().totalPendingWriteBytes());
+        executeLatch.countDown();
+
+        while (executor.pendingTasks() != 0) {
+            // Wait until there is no more pending task left.
+            Thread.sleep(10);
+        }
+
+        ch.pipeline().remove("handler");
+
+        // Ensure we do not try to shutdown the executor before we handled everything for the Channel. Otherwise
+        // the Executor may reject when the Channel tries to add a task to it.
+        handlerRemovedLatch.await();
+
+        safeClose(ch);
+
+        executor.shutdownGracefully();
     }
 
     private static void safeClose(EmbeddedChannel ch) {

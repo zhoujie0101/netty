@@ -22,46 +22,50 @@ import io.netty.channel.ReflectiveChannelFactory;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
+import io.netty.resolver.InetSocketAddressResolver;
+import io.netty.resolver.NameResolver;
 import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.StringUtil;
+import io.netty.util.internal.UnstableApi;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.concurrent.ConcurrentMap;
 
-import static io.netty.resolver.dns.DnsNameResolver.ANY_LOCAL_ADDR;
+import static io.netty.util.internal.PlatformDependent.newConcurrentHashMap;
 
 /**
  * A {@link AddressResolverGroup} of {@link DnsNameResolver}s.
  */
+@UnstableApi
 public class DnsAddressResolverGroup extends AddressResolverGroup<InetSocketAddress> {
 
-    private final ChannelFactory<? extends DatagramChannel> channelFactory;
-    private final InetSocketAddress localAddress;
-    private final DnsServerAddresses nameServerAddresses;
+    private final DnsNameResolverBuilder dnsResolverBuilder;
 
-    public DnsAddressResolverGroup(
-            Class<? extends DatagramChannel> channelType, DnsServerAddresses nameServerAddresses) {
-        this(channelType, ANY_LOCAL_ADDR, nameServerAddresses);
+    private final ConcurrentMap<String, Promise<InetAddress>> resolvesInProgress = newConcurrentHashMap();
+    private final ConcurrentMap<String, Promise<List<InetAddress>>> resolveAllsInProgress = newConcurrentHashMap();
+
+    public DnsAddressResolverGroup(DnsNameResolverBuilder dnsResolverBuilder) {
+        this.dnsResolverBuilder = dnsResolverBuilder.copy();
     }
 
     public DnsAddressResolverGroup(
             Class<? extends DatagramChannel> channelType,
-            InetSocketAddress localAddress, DnsServerAddresses nameServerAddresses) {
-        this(new ReflectiveChannelFactory<DatagramChannel>(channelType), localAddress, nameServerAddresses);
-    }
-
-    public DnsAddressResolverGroup(
-            ChannelFactory<? extends DatagramChannel> channelFactory, DnsServerAddresses nameServerAddresses) {
-        this(channelFactory, ANY_LOCAL_ADDR, nameServerAddresses);
+            DnsServerAddressStreamProvider nameServerProvider) {
+        this(new DnsNameResolverBuilder());
+        dnsResolverBuilder.channelType(channelType).nameServerProvider(nameServerProvider);
     }
 
     public DnsAddressResolverGroup(
             ChannelFactory<? extends DatagramChannel> channelFactory,
-            InetSocketAddress localAddress, DnsServerAddresses nameServerAddresses) {
-        this.channelFactory = channelFactory;
-        this.localAddress = localAddress;
-        this.nameServerAddresses = nameServerAddresses;
+            DnsServerAddressStreamProvider nameServerProvider) {
+        this(new DnsNameResolverBuilder());
+        dnsResolverBuilder.channelFactory(channelFactory).nameServerProvider(nameServerProvider);
     }
 
+    @SuppressWarnings("deprecation")
     @Override
     protected final AddressResolver<InetSocketAddress> newResolver(EventExecutor executor) throws Exception {
         if (!(executor instanceof EventLoop)) {
@@ -70,22 +74,53 @@ public class DnsAddressResolverGroup extends AddressResolverGroup<InetSocketAddr
                     " (expected: " + StringUtil.simpleClassName(EventLoop.class));
         }
 
-        return newResolver((EventLoop) executor, channelFactory, localAddress, nameServerAddresses);
+        // we don't really need to pass channelFactory and nameServerProvider separately,
+        // but still keep this to ensure backward compatibility with (potentially) override methods
+        return newResolver((EventLoop) executor,
+                dnsResolverBuilder.channelFactory(),
+                dnsResolverBuilder.nameServerProvider());
     }
 
     /**
-     * Creates a new {@link DnsNameResolver}. Override this method to create an alternative {@link DnsNameResolver}
-     * implementation or override the default configuration.
+     * @deprecated Override {@link #newNameResolver(EventLoop, ChannelFactory, DnsServerAddressStreamProvider)}.
      */
+    @Deprecated
     protected AddressResolver<InetSocketAddress> newResolver(
             EventLoop eventLoop, ChannelFactory<? extends DatagramChannel> channelFactory,
-            InetSocketAddress localAddress, DnsServerAddresses nameServerAddresses) throws Exception {
+            DnsServerAddressStreamProvider nameServerProvider) throws Exception {
 
-        return new DnsNameResolverBuilder(eventLoop)
+        final NameResolver<InetAddress> resolver = new InflightNameResolver<InetAddress>(
+                eventLoop,
+                newNameResolver(eventLoop, channelFactory, nameServerProvider),
+                resolvesInProgress,
+                resolveAllsInProgress);
+
+        return newAddressResolver(eventLoop, resolver);
+    }
+
+    /**
+     * Creates a new {@link NameResolver}. Override this method to create an alternative {@link NameResolver}
+     * implementation or override the default configuration.
+     */
+    protected NameResolver<InetAddress> newNameResolver(EventLoop eventLoop,
+                                                        ChannelFactory<? extends DatagramChannel> channelFactory,
+                                                        DnsServerAddressStreamProvider nameServerProvider)
+            throws Exception {
+        // once again, channelFactory and nameServerProvider are most probably set in builder already,
+        // but I do reassign them again to avoid corner cases with override methods
+        return dnsResolverBuilder.eventLoop(eventLoop)
                 .channelFactory(channelFactory)
-                .localAddress(localAddress)
-                .nameServerAddresses(nameServerAddresses)
-                .build()
-                .asAddressResolver();
+                .nameServerProvider(nameServerProvider)
+                .build();
+    }
+
+    /**
+     * Creates a new {@link AddressResolver}. Override this method to create an alternative {@link AddressResolver}
+     * implementation or override the default configuration.
+     */
+    protected AddressResolver<InetSocketAddress> newAddressResolver(EventLoop eventLoop,
+                                                                    NameResolver<InetAddress> resolver)
+            throws Exception {
+        return new InetSocketAddressResolver(eventLoop, resolver);
     }
 }

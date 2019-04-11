@@ -106,11 +106,17 @@ public class HttpResponseDecoder extends HttpObjectDecoder {
         super(maxInitialLineLength, maxHeaderSize, maxChunkSize, true, validateHeaders);
     }
 
+    public HttpResponseDecoder(
+            int maxInitialLineLength, int maxHeaderSize, int maxChunkSize, boolean validateHeaders,
+            int initialBufferSize) {
+        super(maxInitialLineLength, maxHeaderSize, maxChunkSize, true, validateHeaders, initialBufferSize);
+    }
+
     @Override
     protected HttpMessage createMessage(String[] initialLine) {
         return new DefaultHttpResponse(
                 HttpVersion.valueOf(initialLine[0]),
-                new HttpResponseStatus(Integer.parseInt(initialLine[1]), initialLine[2]), validateHeaders);
+                HttpResponseStatus.valueOf(Integer.parseInt(initialLine[1]), initialLine[2]), validateHeaders);
     }
 
     @Override

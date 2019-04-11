@@ -18,11 +18,13 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import io.netty.util.internal.UnstableApi;
 
 /**
  * Manager for the life cycle of the HTTP/2 connection. Handles graceful shutdown of the channel,
  * closing only after all of the streams have closed.
  */
+@UnstableApi
 public interface Http2LifecycleManager {
 
     /**
@@ -86,6 +88,11 @@ public interface Http2LifecycleManager {
 
     /**
      * Processes the given error.
+     *
+     * @param ctx The context used for communication and buffer allocation if necessary.
+     * @param outbound {@code true} if the error was caused by an outbound operation and so the corresponding
+     * {@link ChannelPromise} was failed as well.
+     * @param cause the error.
      */
-    void onError(ChannelHandlerContext ctx, Throwable cause);
+    void onError(ChannelHandlerContext ctx, boolean outbound, Throwable cause);
 }

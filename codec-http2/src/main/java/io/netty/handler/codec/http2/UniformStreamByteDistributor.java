@@ -14,13 +14,17 @@
  */
 package io.netty.handler.codec.http2;
 
+import io.netty.util.internal.UnstableApi;
+
 import java.util.ArrayDeque;
 import java.util.Deque;
 
+import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_MIN_ALLOCATION_CHUNK;
 import static io.netty.handler.codec.http2.Http2CodecUtil.streamableBytes;
 import static io.netty.handler.codec.http2.Http2Error.INTERNAL_ERROR;
 import static io.netty.handler.codec.http2.Http2Exception.connectionError;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
+import static io.netty.util.internal.ObjectUtil.checkPositive;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
@@ -30,9 +34,8 @@ import static java.lang.Math.min;
  * fewer streams may be written to in each call to {@link #distribute(int, Writer)}, doing this
  * should improve the goodput on each written stream.
  */
+@UnstableApi
 public final class UniformStreamByteDistributor implements StreamByteDistributor {
-    static final int DEFAULT_MIN_ALLOCATION_CHUNK = 1024;
-
     private final Http2Connection.PropertyKey stateKey;
     private final Deque<State> queue = new ArrayDeque<State>(4);
 
@@ -70,9 +73,7 @@ public final class UniformStreamByteDistributor implements StreamByteDistributor
      * Must be > 0.
      */
     public void minAllocationChunk(int minAllocationChunk) {
-        if (minAllocationChunk <= 0) {
-            throw new IllegalArgumentException("minAllocationChunk must be > 0");
-        }
+        checkPositive(minAllocationChunk, "minAllocationChunk");
         this.minAllocationChunk = minAllocationChunk;
     }
 
@@ -84,9 +85,12 @@ public final class UniformStreamByteDistributor implements StreamByteDistributor
     }
 
     @Override
-    public boolean distribute(int maxBytes, Writer writer) throws Http2Exception {
-        checkNotNull(writer, "writer");
+    public void updateDependencyTree(int childStreamId, int parentStreamId, short weight, boolean exclusive) {
+        // This class ignores priority and dependency!
+    }
 
+    @Override
+    public boolean distribute(int maxBytes, Writer writer) throws Http2Exception {
         final int size = queue.size();
         if (size == 0) {
             return totalStreamableBytes > 0;
@@ -125,13 +129,6 @@ public final class UniformStreamByteDistributor implements StreamByteDistributor
     }
 
     /**
-     * For testing only!
-     */
-    int streamableBytes0(Http2Stream stream) {
-        return state(stream).streamableBytes;
-    }
-
-    /**
      * The remote flow control state for a single stream.
      */
     private final class State {
@@ -146,7 +143,8 @@ public final class UniformStreamByteDistributor implements StreamByteDistributor
         }
 
         void updateStreamableBytes(int newStreamableBytes, boolean hasFrame, int windowSize) {
-            assert hasFrame || newStreamableBytes == 0;
+            assert hasFrame || newStreamableBytes == 0 :
+                "hasFrame: " + hasFrame + " newStreamableBytes: " + newStreamableBytes;
 
             int delta = newStreamableBytes - streamableBytes;
             if (delta != 0) {
@@ -155,7 +153,7 @@ public final class UniformStreamByteDistributor implements StreamByteDistributor
             }
             // In addition to only enqueuing state when they have frames we enforce the following restrictions:
             // 1. If the window has gone negative. We never want to queue a state. However we also don't want to
-            //    Immediately remove the item if it is already queued because removal from dequeue is O(n). So
+            //    Immediately remove the item if it is already queued because removal from deque is O(n). So
             //    we allow it to stay queued and rely on the distribution loop to remove this state.
             // 2. If the window is zero we only want to queue if we are not writing. If we are writing that means
             //    we gave the state a chance to write zero length frames. We wait until updateStreamableBytes is

@@ -20,6 +20,7 @@ import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.MessageSizeEstimator;
 import io.netty.channel.RecvByteBufAllocator;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.socket.SocketChannelConfig;
 
 /**
@@ -38,7 +39,10 @@ import io.netty.channel.socket.SocketChannelConfig;
  * <td>{@link ChannelOption#SO_TIMEOUT}</td><td>{@link #setSoTimeout(int)}</td>
  * </tr>
  * </table>
+ *
+ * @deprecated use NIO / EPOLL / KQUEUE transport.
  */
+@Deprecated
 public interface OioSocketChannelConfig extends SocketChannelConfig {
 
     /**
@@ -105,6 +109,9 @@ public interface OioSocketChannelConfig extends SocketChannelConfig {
 
     @Override
     OioSocketChannelConfig setWriteBufferLowWaterMark(int writeBufferLowWaterMark);
+
+    @Override
+    OioSocketChannelConfig setWriteBufferWaterMark(WriteBufferWaterMark writeBufferWaterMark);
 
     @Override
     OioSocketChannelConfig setMessageSizeEstimator(MessageSizeEstimator estimator);

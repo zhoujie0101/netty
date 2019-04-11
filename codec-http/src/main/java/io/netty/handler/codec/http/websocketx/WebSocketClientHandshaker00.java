@@ -43,12 +43,12 @@ import java.nio.ByteBuffer;
  */
 public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
 
-    private static final AsciiString WEBSOCKET = new AsciiString("WebSocket");
+    private static final AsciiString WEBSOCKET = AsciiString.cached("WebSocket");
 
     private ByteBuf expectedChallengeResponseBytes;
 
     /**
-     * Constructor specifying the destination web socket location and version to initiate
+     * Creates a new instance with the specified destination WebSocket location and version to initiate.
      *
      * @param webSocketURL
      *            URL for web socket communications. e.g "ws://myhost.com/mypath". Subsequent web socket frames will be
@@ -64,7 +64,31 @@ public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
      */
     public WebSocketClientHandshaker00(URI webSocketURL, WebSocketVersion version, String subprotocol,
             HttpHeaders customHeaders, int maxFramePayloadLength) {
-        super(webSocketURL, version, subprotocol, customHeaders, maxFramePayloadLength);
+        this(webSocketURL, version, subprotocol, customHeaders, maxFramePayloadLength,
+                DEFAULT_FORCE_CLOSE_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * Creates a new instance with the specified destination WebSocket location and version to initiate.
+     *
+     * @param webSocketURL
+     *            URL for web socket communications. e.g "ws://myhost.com/mypath". Subsequent web socket frames will be
+     *            sent to this URL.
+     * @param version
+     *            Version of web socket specification to use to connect to the server
+     * @param subprotocol
+     *            Sub protocol request sent to the server.
+     * @param customHeaders
+     *            Map of custom headers to add to the client request
+     * @param maxFramePayloadLength
+     *            Maximum length of a frame's payload
+     * @param forceCloseTimeoutMillis
+     *            Close the connection if it was not closed by the server after timeout specified
+     */
+    public WebSocketClientHandshaker00(URI webSocketURL, WebSocketVersion version, String subprotocol,
+                                       HttpHeaders customHeaders, int maxFramePayloadLength,
+                                       long forceCloseTimeoutMillis) {
+        super(webSocketURL, version, subprotocol, customHeaders, maxFramePayloadLength, forceCloseTimeoutMillis);
     }
 
     /**
@@ -131,29 +155,21 @@ public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
         // Format request
         FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, path);
         HttpHeaders headers = request.headers();
-        headers.add(HttpHeaderNames.UPGRADE, WEBSOCKET)
-               .add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
-               .add(HttpHeaderNames.HOST, wsURL.getHost());
-
-        int wsPort = wsURL.getPort();
-        String originValue = "http://" + wsURL.getHost();
-        if (wsPort != 80 && wsPort != 443) {
-            // if the port is not standard (80/443) its needed to add the port to the header.
-            // See http://tools.ietf.org/html/rfc6454#section-6.2
-            originValue = originValue + ':' + wsPort;
-        }
-
-        headers.add(HttpHeaderNames.ORIGIN, originValue)
-               .add(HttpHeaderNames.SEC_WEBSOCKET_KEY1, key1)
-               .add(HttpHeaderNames.SEC_WEBSOCKET_KEY2, key2);
-
-        String expectedSubprotocol = expectedSubprotocol();
-        if (expectedSubprotocol != null && !expectedSubprotocol.isEmpty()) {
-            headers.add(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, expectedSubprotocol);
-        }
 
         if (customHeaders != null) {
             headers.add(customHeaders);
+        }
+
+        headers.set(HttpHeaderNames.UPGRADE, WEBSOCKET)
+               .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+               .set(HttpHeaderNames.HOST, websocketHostValue(wsURL))
+               .set(HttpHeaderNames.ORIGIN, websocketOriginValue(wsURL))
+               .set(HttpHeaderNames.SEC_WEBSOCKET_KEY1, key1)
+               .set(HttpHeaderNames.SEC_WEBSOCKET_KEY2, key2);
+
+        String expectedSubprotocol = expectedSubprotocol();
+        if (expectedSubprotocol != null && !expectedSubprotocol.isEmpty()) {
+            headers.set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, expectedSubprotocol);
         }
 
         // Set Content-Length to workaround some known defect.
@@ -185,9 +201,7 @@ public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
      */
     @Override
     protected void verify(FullHttpResponse response) {
-        final HttpResponseStatus status = new HttpResponseStatus(101, "WebSocket Protocol Handshake");
-
-        if (!response.status().equals(status)) {
+        if (!response.status().equals(HttpResponseStatus.SWITCHING_PROTOCOLS)) {
             throw new WebSocketHandshakeException("Invalid handshake response getStatus: " + response.status());
         }
 
@@ -199,10 +213,9 @@ public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
                     + upgrade);
         }
 
-        CharSequence connection = headers.get(HttpHeaderNames.CONNECTION);
-        if (!HttpHeaderValues.UPGRADE.contentEqualsIgnoreCase(connection)) {
+        if (!headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE, true)) {
             throw new WebSocketHandshakeException("Invalid handshake response connection: "
-                    + connection);
+                    + headers.get(HttpHeaderNames.CONNECTION));
         }
 
         ByteBuf challenge = response.content();
@@ -254,4 +267,11 @@ public class WebSocketClientHandshaker00 extends WebSocketClientHandshaker {
     protected WebSocketFrameEncoder newWebSocketEncoder() {
         return new WebSocket00FrameEncoder();
     }
+
+    @Override
+    public WebSocketClientHandshaker00 setForceCloseTimeoutMillis(long forceCloseTimeoutMillis) {
+        super.setForceCloseTimeoutMillis(forceCloseTimeoutMillis);
+        return this;
+    }
+
 }

@@ -14,6 +14,7 @@
  */
 package io.netty.util.collection;
 
+import io.netty.util.collection.@K@ObjectMap.PrimitiveEntry;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -75,6 +76,24 @@ public class @K@ObjectHashMapTest {
     @Before
     public void setup() {
         map = new @K@ObjectHashMap<Value>();
+    }
+
+    @Test
+    public void iteartorRemoveShouldNotNPE() {
+        map = new @K@ObjectHashMap<Value>(4, 1);
+        map.put((@O@)(@k@) 0, new Value("A"));
+        map.put((@O@)(@k@) 1, new Value("B"));
+        map.put((@O@)(@k@) 4, new Value("C"));
+        map.remove((@O@)(@k@) 1);
+        Iterator<PrimitiveEntry<Value>> itr = map.entries().iterator();
+        while (itr.hasNext()) {
+            PrimitiveEntry<Value> entry = itr.next();
+            assertNotNull(entry.key());
+            assertNotNull(entry.value());
+            itr.remove();
+        }
+        assertTrue(map.isEmpty());
+        assertEquals(0, map.size());
     }
 
     @Test
@@ -593,5 +612,35 @@ public class @K@ObjectHashMapTest {
             assertEquals(goodMap.remove(key), map.remove(key));
         }
         assertTrue(map.isEmpty());
+    }
+
+    @Test
+    public void valuesIteratorRemove() {
+        Value v1 = new Value("v1");
+        Value v2 = new Value("v2");
+        Value v3 = new Value("v3");
+        map.put((@k@) 1, v1);
+        map.put((@k@) 2, v2);
+        map.put((@k@) 3, v3);
+
+        Iterator<Value> it = map.values().iterator();
+
+        assertSame(v1, it.next());
+        assertSame(v2, it.next());
+        it.remove();
+
+        assertSame(v3, it.next());
+        assertFalse(it.hasNext());
+
+        assertEquals(2, map.size());
+        assertSame(v1, map.get((@k@) 1));
+        assertNull(map.get((@k@) 2));
+        assertSame(v3, map.get((@k@) 3));
+
+        it = map.values().iterator();
+
+        assertSame(v1, it.next());
+        assertSame(v3, it.next());
+        assertFalse(it.hasNext());
     }
 }

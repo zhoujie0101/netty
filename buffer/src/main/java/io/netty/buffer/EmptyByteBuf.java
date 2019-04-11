@@ -16,6 +16,8 @@
 
 package io.netty.buffer;
 
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
 import io.netty.util.ByteProcessor;
 import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.PlatformDependent;
@@ -26,6 +28,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
+import java.nio.channels.FileChannel;
 import java.nio.channels.GatheringByteChannel;
 import java.nio.channels.ScatteringByteChannel;
 import java.nio.charset.Charset;
@@ -35,6 +38,7 @@ import java.nio.charset.Charset;
  */
 public final class EmptyByteBuf extends ByteBuf {
 
+    static final int EMPTY_BYTE_BUF_HASH_CODE = 1;
     private static final ByteBuffer EMPTY_BYTE_BUFFER = ByteBuffer.allocateDirect(0);
     private static final long EMPTY_BYTE_BUFFER_ADDRESS;
 
@@ -92,6 +96,16 @@ public final class EmptyByteBuf extends ByteBuf {
     @Override
     public ByteBuf unwrap() {
         return null;
+    }
+
+    @Override
+    public ByteBuf asReadOnly() {
+        return Unpooled.unmodifiableBuffer(this);
+    }
+
+    @Override
+    public boolean isReadOnly() {
+        return false;
     }
 
     @Override
@@ -211,9 +225,7 @@ public final class EmptyByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf ensureWritable(int minWritableBytes) {
-        if (minWritableBytes < 0) {
-            throw new IllegalArgumentException("minWritableBytes: " + minWritableBytes + " (expected: >= 0)");
-        }
+        checkPositiveOrZero(minWritableBytes, "minWritableBytes");
         if (minWritableBytes != 0) {
             throw new IndexOutOfBoundsException();
         }
@@ -222,9 +234,7 @@ public final class EmptyByteBuf extends ByteBuf {
 
     @Override
     public int ensureWritable(int minWritableBytes, boolean force) {
-        if (minWritableBytes < 0) {
-            throw new IllegalArgumentException("minWritableBytes: " + minWritableBytes + " (expected: >= 0)");
-        }
+        checkPositiveOrZero(minWritableBytes, "minWritableBytes");
 
         if (minWritableBytes == 0) {
             return 0;
@@ -375,6 +385,18 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     @Override
+    public int getBytes(int index, FileChannel out, long position, int length) {
+        checkIndex(index, length);
+        return 0;
+    }
+
+    @Override
+    public CharSequence getCharSequence(int index, int length, Charset charset) {
+        checkIndex(index, length);
+        return null;
+    }
+
+    @Override
     public ByteBuf setBoolean(int index, boolean value) {
         throw new IndexOutOfBoundsException();
     }
@@ -482,8 +504,19 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     @Override
+    public int setBytes(int index, FileChannel in, long position, int length) {
+        checkIndex(index, length);
+        return 0;
+    }
+
+    @Override
     public ByteBuf setZero(int index, int length) {
         return checkIndex(index, length);
+    }
+
+    @Override
+    public int setCharSequence(int index, CharSequence sequence, Charset charset) {
+        throw new IndexOutOfBoundsException();
     }
 
     @Override
@@ -597,6 +630,11 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     @Override
+    public ByteBuf readRetainedSlice(int length) {
+        return checkLength(length);
+    }
+
+    @Override
     public ByteBuf readBytes(ByteBuf dst) {
         return checkLength(dst.writableBytes());
     }
@@ -635,6 +673,18 @@ public final class EmptyByteBuf extends ByteBuf {
     public int readBytes(GatheringByteChannel out, int length) {
         checkLength(length);
         return 0;
+    }
+
+    @Override
+    public int readBytes(FileChannel out, long position, int length) {
+        checkLength(length);
+        return 0;
+    }
+
+    @Override
+    public CharSequence readCharSequence(int length, Charset charset) {
+        checkLength(length);
+        return null;
     }
 
     @Override
@@ -709,7 +759,7 @@ public final class EmptyByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeBytes(ByteBuf src) {
-        throw new IndexOutOfBoundsException();
+        return checkLength(src.readableBytes());
     }
 
     @Override
@@ -750,8 +800,19 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     @Override
+    public int writeBytes(FileChannel in, long position, int length) {
+        checkLength(length);
+        return 0;
+    }
+
+    @Override
     public ByteBuf writeZero(int length) {
         return checkLength(length);
+    }
+
+    @Override
+    public int writeCharSequence(CharSequence sequence, Charset charset) {
+        throw new IndexOutOfBoundsException();
     }
 
     @Override
@@ -816,12 +877,27 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     @Override
+    public ByteBuf retainedSlice() {
+        return this;
+    }
+
+    @Override
     public ByteBuf slice(int index, int length) {
         return checkIndex(index, length);
     }
 
     @Override
+    public ByteBuf retainedSlice(int index, int length) {
+        return checkIndex(index, length);
+    }
+
+    @Override
     public ByteBuf duplicate() {
+        return this;
+    }
+
+    @Override
+    public ByteBuf retainedDuplicate() {
         return this;
     }
 
@@ -899,7 +975,7 @@ public final class EmptyByteBuf extends ByteBuf {
 
     @Override
     public int hashCode() {
-        return 0;
+        return EMPTY_BYTE_BUF_HASH_CODE;
     }
 
     @Override
@@ -970,9 +1046,7 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     private ByteBuf checkIndex(int index, int length) {
-        if (length < 0) {
-            throw new IllegalArgumentException("length: " + length);
-        }
+        checkPositiveOrZero(length, "length");
         if (index != 0 || length != 0) {
             throw new IndexOutOfBoundsException();
         }
@@ -980,9 +1054,7 @@ public final class EmptyByteBuf extends ByteBuf {
     }
 
     private ByteBuf checkLength(int length) {
-        if (length < 0) {
-            throw new IllegalArgumentException("length: " + length + " (expected: >= 0)");
-        }
+        checkPositiveOrZero(length, "length");
         if (length != 0) {
             throw new IndexOutOfBoundsException();
         }

@@ -25,7 +25,6 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.oio.AbstractOioMessageChannel;
 import io.netty.channel.sctp.DefaultSctpServerChannelConfig;
 import io.netty.channel.sctp.SctpServerChannelConfig;
-import io.netty.util.internal.OneTimeTask;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -47,14 +46,17 @@ import java.util.Set;
  *
  * Be aware that not all operations systems support SCTP. Please refer to the documentation of your operation system,
  * to understand what you need to do to use it. Also this feature is only supported on Java 7+.
+ *
+ * @deprecated use {@link io.netty.channel.sctp.nio.NioSctpServerChannel}.
  */
+@Deprecated
 public class OioSctpServerChannel extends AbstractOioMessageChannel
         implements io.netty.channel.sctp.SctpServerChannel {
 
     private static final InternalLogger logger =
             InternalLoggerFactory.getInstance(OioSctpServerChannel.class);
 
-    private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
+    private static final ChannelMetadata METADATA = new ChannelMetadata(false, 1);
 
     private static SctpServerChannel newServerSocket() {
         try {
@@ -235,7 +237,7 @@ public class OioSctpServerChannel extends AbstractOioMessageChannel
                 promise.setFailure(t);
             }
         } else {
-            eventLoop().execute(new OneTimeTask() {
+            eventLoop().execute(new Runnable() {
                 @Override
                 public void run() {
                     bindAddress(localAddress, promise);
@@ -260,7 +262,7 @@ public class OioSctpServerChannel extends AbstractOioMessageChannel
                 promise.setFailure(t);
             }
         } else {
-            eventLoop().execute(new OneTimeTask() {
+            eventLoop().execute(new Runnable() {
                 @Override
                 public void run() {
                     unbindAddress(localAddress, promise);
@@ -303,7 +305,7 @@ public class OioSctpServerChannel extends AbstractOioMessageChannel
 
         @Override
         protected void autoReadCleared() {
-            setReadPending(false);
+            clearReadPending();
         }
     }
 }

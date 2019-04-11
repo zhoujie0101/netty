@@ -30,6 +30,7 @@ import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.core.IsNull.notNullValue;
 import static org.hamcrest.core.IsNull.nullValue;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Verifies the correct functionality of the {@link AbstractBinaryMemcacheDecoder}.
@@ -75,7 +76,7 @@ public class BinaryMemcacheDecoderTest {
 
     @After
     public void teardown() throws Exception {
-        channel.finish();
+        channel.finishAndReleaseAll();
     }
 
     /**
@@ -149,6 +150,7 @@ public class BinaryMemcacheDecoderTest {
         while (incoming.isReadable()) {
             channel.writeInbound(incoming.readBytes(5));
         }
+        incoming.release();
 
         BinaryMemcacheRequest request = channel.readInbound();
 
@@ -247,5 +249,28 @@ public class BinaryMemcacheDecoderTest {
         assertThat(content, instanceOf(LastMemcacheContent.class));
         assertThat(content.content().toString(CharsetUtil.UTF_8), is(msgBody));
         content.release();
+    }
+
+    @Test
+    public void shouldRetainCurrentMessageWhenSendingItOut() {
+        channel = new EmbeddedChannel(
+                new BinaryMemcacheRequestEncoder(),
+                new BinaryMemcacheRequestDecoder());
+
+        ByteBuf key = Unpooled.copiedBuffer("Netty", CharsetUtil.UTF_8);
+        ByteBuf extras = Unpooled.copiedBuffer("extras", CharsetUtil.UTF_8);
+        BinaryMemcacheRequest request = new DefaultBinaryMemcacheRequest(key, extras);
+
+        assertTrue(channel.writeOutbound(request));
+        for (;;) {
+            ByteBuf buffer = channel.readOutbound();
+            if (buffer == null) {
+                break;
+            }
+            channel.writeInbound(buffer);
+        }
+        BinaryMemcacheRequest read = channel.readInbound();
+        read.release();
+        // tearDown will call "channel.finish()"
     }
 }

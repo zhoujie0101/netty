@@ -98,7 +98,7 @@ public final class WebSocketClient {
             final WebSocketClientHandler handler =
                     new WebSocketClientHandler(
                             WebSocketClientHandshakerFactory.newHandshaker(
-                                    uri, WebSocketVersion.V13, null, false, new DefaultHttpHeaders()));
+                                    uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders()));
 
             Bootstrap b = new Bootstrap();
             b.group(group)
@@ -113,7 +113,7 @@ public final class WebSocketClient {
                      p.addLast(
                              new HttpClientCodec(),
                              new HttpObjectAggregator(8192),
-                             new WebSocketClientCompressionHandler(),
+                             WebSocketClientCompressionHandler.INSTANCE,
                              handler);
                  }
              });
