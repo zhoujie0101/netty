@@ -35,7 +35,6 @@ import io.netty.handler.codec.http.HttpResponseDecoder;
 import io.netty.handler.codec.http.HttpScheme;
 import io.netty.util.NetUtil;
 import io.netty.util.ReferenceCountUtil;
-import io.netty.util.internal.ThrowableUtil;
 
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
@@ -48,8 +47,6 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
  * Base class for web socket client handshake implementations
  */
 public abstract class WebSocketClientHandshaker {
-    private static final ClosedChannelException CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
-            new ClosedChannelException(), WebSocketClientHandshaker.class, "processHandshake(...)");
 
     private static final String HTTP_SCHEME_PREFIX = HttpScheme.HTTP + "://";
     private static final String HTTPS_SCHEME_PREFIX = HttpScheme.HTTPS + "://";
@@ -77,6 +74,8 @@ public abstract class WebSocketClientHandshaker {
     protected final HttpHeaders customHeaders;
 
     private final int maxFramePayloadLength;
+
+    private final boolean absoluteUpgradeUrl;
 
     /**
      * Base constructor
@@ -118,12 +117,39 @@ public abstract class WebSocketClientHandshaker {
     protected WebSocketClientHandshaker(URI uri, WebSocketVersion version, String subprotocol,
                                         HttpHeaders customHeaders, int maxFramePayloadLength,
                                         long forceCloseTimeoutMillis) {
+        this(uri, version, subprotocol, customHeaders, maxFramePayloadLength, forceCloseTimeoutMillis, false);
+    }
+
+    /**
+     * Base constructor
+     *
+     * @param uri
+     *            URL for web socket communications. e.g "ws://myhost.com/mypath". Subsequent web socket frames will be
+     *            sent to this URL.
+     * @param version
+     *            Version of web socket specification to use to connect to the server
+     * @param subprotocol
+     *            Sub protocol request sent to the server.
+     * @param customHeaders
+     *            Map of custom headers to add to the client request
+     * @param maxFramePayloadLength
+     *            Maximum length of a frame's payload
+     * @param forceCloseTimeoutMillis
+     *            Close the connection if it was not closed by the server after timeout specified
+     * @param  absoluteUpgradeUrl
+     *            Use an absolute url for the Upgrade request, typically when connecting through an HTTP proxy over
+     *            clear HTTP
+     */
+    protected WebSocketClientHandshaker(URI uri, WebSocketVersion version, String subprotocol,
+                                        HttpHeaders customHeaders, int maxFramePayloadLength,
+                                        long forceCloseTimeoutMillis, boolean absoluteUpgradeUrl) {
         this.uri = uri;
         this.version = version;
         expectedSubprotocol = subprotocol;
         this.customHeaders = customHeaders;
         this.maxFramePayloadLength = maxFramePayloadLength;
         this.forceCloseTimeoutMillis = forceCloseTimeoutMillis;
+        this.absoluteUpgradeUrl = absoluteUpgradeUrl;
     }
 
     /**
@@ -434,7 +460,9 @@ public abstract class WebSocketClientHandshaker {
                 @Override
                 public void channelInactive(ChannelHandlerContext ctx) throws Exception {
                     // Fail promise if Channel was closed
-                    promise.tryFailure(CLOSED_CHANNEL_EXCEPTION);
+                    if (!promise.isDone()) {
+                        promise.tryFailure(new ClosedChannelException());
+                    }
                     ctx.fireChannelInactive();
                 }
             });
@@ -536,7 +564,11 @@ public abstract class WebSocketClientHandshaker {
     /**
      * Return the constructed raw path for the give {@link URI}.
      */
-    static String rawPath(URI wsURL) {
+    protected String upgradeUrl(URI wsURL) {
+        if (absoluteUpgradeUrl) {
+            return wsURL.toString();
+        }
+
         String path = wsURL.getRawPath();
         String query = wsURL.getRawQuery();
         if (query != null && !query.isEmpty()) {

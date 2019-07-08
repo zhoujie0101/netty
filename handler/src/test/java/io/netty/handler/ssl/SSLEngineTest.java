@@ -1918,13 +1918,13 @@ public abstract class SSLEngineTest {
         final String sharedCipher = "TLS_RSA_WITH_AES_128_CBC_SHA";
         clientSslCtx = SslContextBuilder.forClient()
                 .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                .ciphers(Arrays.asList(sharedCipher))
+                .ciphers(Collections.singletonList(sharedCipher))
                 .protocols(PROTOCOL_TLS_V1_2, PROTOCOL_TLS_V1)
                 .sslProvider(sslClientProvider())
                 .build();
 
         serverSslCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
-                .ciphers(Arrays.asList(sharedCipher))
+                .ciphers(Collections.singletonList(sharedCipher))
                 .protocols(PROTOCOL_TLS_V1_2, PROTOCOL_TLS_V1)
                 .sslProvider(sslServerProvider())
                 .build();
@@ -1949,13 +1949,13 @@ public abstract class SSLEngineTest {
         final String sharedCipher = "TLS_RSA_WITH_AES_128_CBC_SHA";
         clientSslCtx = SslContextBuilder.forClient()
                 .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                .ciphers(Arrays.asList(sharedCipher), SupportedCipherSuiteFilter.INSTANCE)
+                .ciphers(Collections.singletonList(sharedCipher), SupportedCipherSuiteFilter.INSTANCE)
                 .protocols(PROTOCOL_TLS_V1_2, PROTOCOL_TLS_V1)
                 .sslProvider(sslClientProvider())
                 .build();
 
         serverSslCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
-                .ciphers(Arrays.asList(sharedCipher), SupportedCipherSuiteFilter.INSTANCE)
+                .ciphers(Collections.singletonList(sharedCipher), SupportedCipherSuiteFilter.INSTANCE)
                 .protocols(PROTOCOL_TLS_V1_2, PROTOCOL_TLS_V1)
                 .sslProvider(sslServerProvider())
                 .build();
@@ -2903,7 +2903,7 @@ public abstract class SSLEngineTest {
         SelfSignedCertificate ssc = new SelfSignedCertificate();
         KeyManagerFactory kmf = useKeyManagerFactory ?
                 SslContext.buildKeyManagerFactory(
-                        new java.security.cert.X509Certificate[] { ssc.cert()}, ssc.key(), null, null) : null;
+                        new java.security.cert.X509Certificate[] { ssc.cert()}, ssc.key(), null, null, null) : null;
 
         SslContextBuilder clientContextBuilder = SslContextBuilder.forClient();
         if (mutualAuth) {
@@ -3249,7 +3249,7 @@ public abstract class SSLEngineTest {
             throws UnrecoverableKeyException, KeyStoreException, NoSuchAlgorithmException,
             CertificateException, IOException {
         return SslContext.buildKeyManagerFactory(
-                new java.security.cert.X509Certificate[] { ssc.cert() }, ssc.key(), null, null);
+                new java.security.cert.X509Certificate[] { ssc.cert() }, ssc.key(), null, null, null);
     }
 
     private final class TestTrustManagerFactory extends X509ExtendedTrustManager {

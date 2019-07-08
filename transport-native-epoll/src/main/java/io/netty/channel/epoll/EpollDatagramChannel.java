@@ -27,20 +27,21 @@ import io.netty.channel.DefaultAddressedEnvelope;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramChannelConfig;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.unix.DatagramSocketAddress;
 import io.netty.channel.unix.Errors;
 import io.netty.channel.unix.IovArray;
+import io.netty.channel.unix.Socket;
 import io.netty.channel.unix.UnixChannelUtil;
 import io.netty.util.internal.StringUtil;
 
 import java.io.IOException;
+import java.net.Inet4Address;
 import java.net.InetAddress;
-import java.net.Inet6Address;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.PortUnreachableException;
 import java.net.SocketAddress;
-import java.net.SocketException;
 import java.nio.ByteBuffer;
 
 import static io.netty.channel.epoll.LinuxSocket.newSocketDgram;
@@ -61,16 +62,32 @@ public final class EpollDatagramChannel extends AbstractEpollChannel implements 
     private final EpollDatagramChannelConfig config;
     private volatile boolean connected;
 
+    /**
+     * Create a new instance which selects the {@link InternetProtocolFamily} to use depending
+     * on the Operation Systems default which will be chosen.
+     */
     public EpollDatagramChannel() {
-        super(newSocketDgram());
-        config = new EpollDatagramChannelConfig(this);
+        this((InternetProtocolFamily) null);
     }
 
+    /**
+     * Create a new instance using the given {@link InternetProtocolFamily}. If {@code null} is used it will depend
+     * on the Operation Systems default which will be chosen.
+     */
+    public EpollDatagramChannel(InternetProtocolFamily family) {
+        this(family == null ?
+                newSocketDgram(Socket.isIPv6Preferred()) : newSocketDgram(family == InternetProtocolFamily.IPv6));
+    }
+
+    /**
+     * Create a new instance which selects the {@link InternetProtocolFamily} to use depending
+     * on the Operation Systems default which will be chosen.
+     */
     public EpollDatagramChannel(int fd) {
         this(new LinuxSocket(fd));
     }
 
-    EpollDatagramChannel(LinuxSocket fd) {
+    private EpollDatagramChannel(LinuxSocket fd) {
         super(null, fd, true);
         config = new EpollDatagramChannelConfig(this);
     }
@@ -150,15 +167,11 @@ public final class EpollDatagramChannel extends AbstractEpollChannel implements 
             throw new NullPointerException("networkInterface");
         }
 
-        if (multicastAddress instanceof Inet6Address) {
-            promise.setFailure(new UnsupportedOperationException("Multicast not supported"));
-        } else {
-            try {
-                socket.joinGroup(multicastAddress, networkInterface, source);
-                promise.setSuccess();
-            } catch (IOException e) {
-                promise.setFailure(e);
-            }
+        try {
+            socket.joinGroup(multicastAddress, networkInterface, source);
+            promise.setSuccess();
+        } catch (IOException e) {
+            promise.setFailure(e);
         }
         return promise;
     }
@@ -209,15 +222,11 @@ public final class EpollDatagramChannel extends AbstractEpollChannel implements 
             throw new NullPointerException("networkInterface");
         }
 
-        if (multicastAddress instanceof Inet6Address) {
-            promise.setFailure(new UnsupportedOperationException("Multicast not supported"));
-        } else {
-            try {
-                socket.leaveGroup(multicastAddress, networkInterface, source);
-                promise.setSuccess();
-            } catch (IOException e) {
-                promise.setFailure(e);
-            }
+        try {
+            socket.leaveGroup(multicastAddress, networkInterface, source);
+            promise.setSuccess();
+        } catch (IOException e) {
+            promise.setFailure(e);
         }
         return promise;
     }
@@ -273,6 +282,13 @@ public final class EpollDatagramChannel extends AbstractEpollChannel implements 
 
     @Override
     protected void doBind(SocketAddress localAddress) throws Exception {
+        if (localAddress instanceof InetSocketAddress) {
+            InetSocketAddress socketAddress = (InetSocketAddress) localAddress;
+            if (socketAddress.getAddress().isAnyLocalAddress() &&
+                    socketAddress.getAddress() instanceof Inet4Address && Socket.isIPv6Preferred()) {
+                localAddress = new InetSocketAddress(LinuxSocket.INET6_ANY, socketAddress.getPort());
+            }
+        }
         super.doBind(localAddress);
         active = true;
     }
@@ -300,7 +316,7 @@ public final class EpollDatagramChannel extends AbstractEpollChannel implements 
                         NativeDatagramPacketArray.NativeDatagramPacket[] packets = array.packets();
 
                         while (cnt > 0) {
-                            int send = Native.sendmmsg(socket.intValue(), packets, offset, cnt);
+                            int send = socket.sendmmsg(packets, offset, cnt);
                             if (send == 0) {
                                 // Did not write all messages.
                                 setFlag(Native.EPOLLOUT);

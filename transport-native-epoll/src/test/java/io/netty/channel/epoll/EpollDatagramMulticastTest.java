@@ -24,10 +24,6 @@ import java.util.List;
 public class EpollDatagramMulticastTest extends DatagramMulticastTest {
     @Override
     protected List<TestsuitePermutation.BootstrapComboFactory<Bootstrap, Bootstrap>> newFactories() {
-        return EpollSocketTestPermutation.INSTANCE.datagram();
-    }
-
-    public void testMulticast(Bootstrap sb, Bootstrap cb) throws Throwable {
-        super.testMulticast(sb, cb);
+        return EpollSocketTestPermutation.INSTANCE.datagram(internetProtocolFamily());
     }
 }
