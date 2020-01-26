@@ -20,11 +20,14 @@ import io.netty.buffer.ByteBufHolder;
 import io.netty.channel.AddressedEnvelope;
 import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ReflectiveChannelFactory;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
+import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
@@ -68,6 +71,7 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -2743,15 +2747,39 @@ public class DnsNameResolverTest {
 
     @Test(timeout = 5000)
     public void testTruncatedWithoutTcpFallback() throws IOException {
-        testTruncated0(false);
+        testTruncated0(false, false);
     }
 
     @Test(timeout = 5000)
     public void testTruncatedWithTcpFallback() throws IOException {
-        testTruncated0(true);
+        testTruncated0(true, false);
     }
 
-    private static void testTruncated0(boolean tcpFallback) throws IOException {
+    @Test(timeout = 5000)
+    public void testTruncatedWithTcpFallbackBecauseOfMtu() throws IOException {
+        testTruncated0(true, true);
+    }
+
+    private static DnsMessageModifier modifierFrom(DnsMessage message) {
+        DnsMessageModifier modifier = new DnsMessageModifier();
+        modifier.setAcceptNonAuthenticatedData(message.isAcceptNonAuthenticatedData());
+        modifier.setAdditionalRecords(message.getAdditionalRecords());
+        modifier.setAnswerRecords(message.getAnswerRecords());
+        modifier.setAuthoritativeAnswer(message.isAuthoritativeAnswer());
+        modifier.setAuthorityRecords(message.getAuthorityRecords());
+        modifier.setMessageType(message.getMessageType());
+        modifier.setOpCode(message.getOpCode());
+        modifier.setQuestionRecords(message.getQuestionRecords());
+        modifier.setRecursionAvailable(message.isRecursionAvailable());
+        modifier.setRecursionDesired(message.isRecursionDesired());
+        modifier.setReserved(message.isReserved());
+        modifier.setResponseCode(message.getResponseCode());
+        modifier.setTransactionId(message.getTransactionId());
+        modifier.setTruncated(message.isTruncated());
+        return modifier;
+    }
+
+    private static void testTruncated0(boolean tcpFallback, final boolean truncatedBecauseOfMtu) throws IOException {
         final String host = "somehost.netty.io";
         final String txt = "this is a txt record";
         final AtomicReference<DnsMessage> messageRef = new AtomicReference<DnsMessage>();
@@ -2774,29 +2802,18 @@ public class DnsNameResolverTest {
                 // Store a original message so we can replay it later on.
                 messageRef.set(message);
 
-                // Create a copy of the message but set the truncated flag.
-                DnsMessageModifier modifier = new DnsMessageModifier();
-                modifier.setAcceptNonAuthenticatedData(message.isAcceptNonAuthenticatedData());
-                modifier.setAdditionalRecords(message.getAdditionalRecords());
-                modifier.setAnswerRecords(message.getAnswerRecords());
-                modifier.setAuthoritativeAnswer(message.isAuthoritativeAnswer());
-                modifier.setAuthorityRecords(message.getAuthorityRecords());
-                modifier.setMessageType(message.getMessageType());
-                modifier.setOpCode(message.getOpCode());
-                modifier.setQuestionRecords(message.getQuestionRecords());
-                modifier.setRecursionAvailable(message.isRecursionAvailable());
-                modifier.setRecursionDesired(message.isRecursionDesired());
-                modifier.setReserved(message.isReserved());
-                modifier.setResponseCode(message.getResponseCode());
-                modifier.setTransactionId(message.getTransactionId());
-                modifier.setTruncated(true);
-                return modifier.getDnsMessage();
+                if (!truncatedBecauseOfMtu) {
+                    // Create a copy of the message but set the truncated flag.
+                    DnsMessageModifier modifier = modifierFrom(message);
+                    modifier.setTruncated(true);
+                    return modifier.getDnsMessage();
+                }
+                return message;
             }
         };
         dnsServer2.start();
         DnsNameResolver resolver = null;
         ServerSocket serverSocket = null;
-        Socket socket = null;
         try {
             DnsNameResolverBuilder builder = newResolver()
                     .queryTimeoutMillis(10000)
@@ -2807,19 +2824,40 @@ public class DnsNameResolverTest {
             if (tcpFallback) {
                 // If we are configured to use TCP as a fallback also bind a TCP socket
                 serverSocket = new ServerSocket(dnsServer2.localAddress().getPort());
+                serverSocket.setReuseAddress(true);
 
                 builder.socketChannelType(NioSocketChannel.class);
             }
             resolver = builder.build();
+            if (truncatedBecauseOfMtu) {
+                resolver.ch.pipeline().addFirst(new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                        if (msg instanceof DatagramPacket) {
+                            // Truncate the packet by 1 byte.
+                            DatagramPacket packet = (DatagramPacket) msg;
+                            packet.content().writerIndex(packet.content().writerIndex() - 1);
+                        }
+                        ctx.fireChannelRead(msg);
+                    }
+                });
+            }
             Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> envelopeFuture = resolver.query(
                     new DefaultDnsQuestion(host, DnsRecordType.TXT));
 
             if (tcpFallback) {
                 // If we are configured to use TCP as a fallback lets replay the dns message over TCP
-                socket = serverSocket.accept();
+                Socket socket = serverSocket.accept();
+
+                InputStream in = socket.getInputStream();
+                assertTrue((in.read() << 8 | (in.read() & 0xff)) > 2); // skip length field
+                int txnId = in.read() << 8 | (in.read() & 0xff);
 
                 IoBuffer ioBuffer = IoBuffer.allocate(1024);
-                new DnsMessageEncoder().encode(ioBuffer, messageRef.get());
+                // Must replace the transactionId with the one from the TCP request
+                DnsMessageModifier modifier = modifierFrom(messageRef.get());
+                modifier.setTransactionId(txnId);
+                new DnsMessageEncoder().encode(ioBuffer, modifier.getDnsMessage());
                 ioBuffer.flip();
 
                 ByteBuffer lenBuffer = ByteBuffer.allocate(2);
@@ -2834,7 +2872,11 @@ public class DnsNameResolverTest {
                     socket.getOutputStream().write(ioBuffer.get());
                 }
                 socket.getOutputStream().flush();
-                socket.getOutputStream().close();
+                // Let's wait until we received the envelope before closing the socket.
+                envelopeFuture.syncUninterruptibly();
+
+                socket.close();
+                serverSocket.close();
             }
 
             AddressedEnvelope<DnsResponse, InetSocketAddress> envelope = envelopeFuture.syncUninterruptibly().getNow();
@@ -2856,15 +2898,9 @@ public class DnsNameResolverTest {
             } else {
                 assertTrue(envelope.content().isTruncated());
             }
-            envelope.release();
+            assertTrue(envelope.release());
         } finally {
             dnsServer2.stop();
-            if (socket != null) {
-                socket.close();
-            }
-            if (serverSocket != null) {
-                serverSocket.close();
-            }
             if (resolver != null) {
                 resolver.close();
             }

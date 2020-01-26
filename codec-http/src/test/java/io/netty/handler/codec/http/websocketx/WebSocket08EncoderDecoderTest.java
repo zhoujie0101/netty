@@ -76,6 +76,10 @@ public class WebSocket08EncoderDecoderTest {
         Assert.assertNotNull(response);
         Assert.assertEquals(expectedStatus.code(), response.statusCode());
         Assert.assertEquals(errorMessage, response.reasonText());
+        response.release();
+
+        Assert.assertFalse(inChannel.finish());
+        Assert.assertFalse(outChannel.finish());
 
         // Without auto-close
         config = WebSocketDecoderConfig.newBuilder()
@@ -90,10 +94,11 @@ public class WebSocket08EncoderDecoderTest {
         response = inChannel.readOutbound();
         Assert.assertNull(response);
 
-        // Release test data
-        binTestData.release();
         Assert.assertFalse(inChannel.finish());
         Assert.assertFalse(outChannel.finish());
+
+        // Release test data
+        binTestData.release();
     }
 
     private void executeProtocolViolationTest(EmbeddedChannel outChannel, EmbeddedChannel inChannel,

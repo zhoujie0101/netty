@@ -18,11 +18,14 @@ package io.netty.channel;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.util.Attribute;
 import io.netty.util.AttributeKey;
-import io.netty.util.Recycler;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ResourceLeakHint;
+import io.netty.util.concurrent.AbstractEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.OrderedEventExecutor;
+import io.netty.util.internal.ObjectPool;
+import io.netty.util.internal.ObjectPool.Handle;
+import io.netty.util.internal.ObjectPool.ObjectCreator;
 import io.netty.util.internal.PromiseNotificationUtil;
 import io.netty.util.internal.ThrowableUtil;
 import io.netty.util.internal.ObjectUtil;
@@ -474,9 +477,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
 
     @Override
     public ChannelFuture bind(final SocketAddress localAddress, final ChannelPromise promise) {
-        if (localAddress == null) {
-            throw new NullPointerException("localAddress");
-        }
+        ObjectUtil.checkNotNull(localAddress, "localAddress");
         if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
@@ -492,7 +493,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 public void run() {
                     next.invokeBind(localAddress, promise);
                 }
-            }, promise, null);
+            }, promise, null, false);
         }
         return promise;
     }
@@ -517,10 +518,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     @Override
     public ChannelFuture connect(
             final SocketAddress remoteAddress, final SocketAddress localAddress, final ChannelPromise promise) {
+        ObjectUtil.checkNotNull(remoteAddress, "remoteAddress");
 
-        if (remoteAddress == null) {
-            throw new NullPointerException("remoteAddress");
-        }
         if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
@@ -536,7 +535,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 public void run() {
                     next.invokeConnect(remoteAddress, localAddress, promise);
                 }
-            }, promise, null);
+            }, promise, null, false);
         }
         return promise;
     }
@@ -575,7 +574,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 public void run() {
                     next.invokeDisconnect(promise);
                 }
-            }, promise, null);
+            }, promise, null, false);
         }
         return promise;
     }
@@ -609,7 +608,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 public void run() {
                     next.invokeClose(promise);
                 }
-            }, promise, null);
+            }, promise, null, false);
         }
 
         return promise;
@@ -644,7 +643,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 public void run() {
                     next.invokeDeregister(promise);
                 }
-            }, promise, null);
+            }, promise, null, false);
         }
 
         return promise;
@@ -703,7 +702,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         return promise;
     }
 
-    private void invokeWrite(Object msg, ChannelPromise promise) {
+    void invokeWrite(Object msg, ChannelPromise promise) {
         if (invokeHandler()) {
             invokeWrite0(msg, promise);
         } else {
@@ -730,7 +729,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             if (tasks == null) {
                 next.invokeTasks = tasks = new Tasks(next);
             }
-            safeExecute(executor, tasks.invokeFlushTask, channel().voidPromise(), null);
+            safeExecute(executor, tasks.invokeFlushTask, channel().voidPromise(), null, false);
         }
 
         return this;
@@ -758,7 +757,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         return promise;
     }
 
-    private void invokeWriteAndFlush(Object msg, ChannelPromise promise) {
+    void invokeWriteAndFlush(Object msg, ChannelPromise promise) {
         if (invokeHandler()) {
             invokeWrite0(msg, promise);
             invokeFlush0();
@@ -791,14 +790,9 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 next.invokeWrite(m, promise);
             }
         } else {
-            final AbstractWriteTask task;
-            if (flush) {
-                task = WriteAndFlushTask.newInstance(next, m, promise);
-            }  else {
-                task = WriteTask.newInstance(next, m, promise);
-            }
-            if (!safeExecute(executor, task, promise, m)) {
-                // We failed to submit the AbstractWriteTask. We need to cancel it so we decrement the pending bytes
+            final WriteTask task = WriteTask.newInstance(next, m, promise, flush);
+            if (!safeExecute(executor, task, promise, m, !flush)) {
+                // We failed to submit the WriteTask. We need to cancel it so we decrement the pending bytes
                 // and put it back in the Recycler for re-use later.
                 //
                 // See https://github.com/netty/netty/issues/8343.
@@ -876,9 +870,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     }
 
     private boolean isNotValidPromise(ChannelPromise promise, boolean allowVoidPromise) {
-        if (promise == null) {
-            throw new NullPointerException("promise");
-        }
+        ObjectUtil.checkNotNull(promise, "promise");
 
         if (promise.isDone()) {
             // Check if the promise was cancelled and if so signal that the processing of the operation
@@ -1006,9 +998,14 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         return channel().hasAttr(key);
     }
 
-    private static boolean safeExecute(EventExecutor executor, Runnable runnable, ChannelPromise promise, Object msg) {
+    private static boolean safeExecute(EventExecutor executor, Runnable runnable,
+            ChannelPromise promise, Object msg, boolean lazy) {
         try {
-            executor.execute(runnable);
+            if (lazy && executor instanceof AbstractEventExecutor) {
+                ((AbstractEventExecutor) executor).lazyExecute(runnable);
+            } else {
+                executor.execute(runnable);
+            }
             return true;
         } catch (Throwable cause) {
             try {
@@ -1032,28 +1029,41 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         return StringUtil.simpleClassName(ChannelHandlerContext.class) + '(' + name + ", " + channel() + ')';
     }
 
-    abstract static class AbstractWriteTask implements Runnable {
+    static final class WriteTask implements Runnable {
+        private static final ObjectPool<WriteTask> RECYCLER = ObjectPool.newPool(new ObjectCreator<WriteTask>() {
+            @Override
+            public WriteTask newObject(Handle<WriteTask> handle) {
+                return new WriteTask(handle);
+            }
+        });
+
+        static WriteTask newInstance(AbstractChannelHandlerContext ctx,
+                Object msg, ChannelPromise promise, boolean flush) {
+            WriteTask task = RECYCLER.get();
+            init(task, ctx, msg, promise, flush);
+            return task;
+        }
 
         private static final boolean ESTIMATE_TASK_SIZE_ON_SUBMIT =
                 SystemPropertyUtil.getBoolean("io.netty.transport.estimateSizeOnSubmit", true);
 
-        // Assuming a 64-bit JVM, 16 bytes object header, 3 reference fields and one int field, plus alignment
+        // Assuming compressed oops, 12 bytes obj header, 4 ref fields and one int field
         private static final int WRITE_TASK_OVERHEAD =
-                SystemPropertyUtil.getInt("io.netty.transport.writeTaskSizeOverhead", 48);
+                SystemPropertyUtil.getInt("io.netty.transport.writeTaskSizeOverhead", 32);
 
-        private final Recycler.Handle<AbstractWriteTask> handle;
+        private final Handle<WriteTask> handle;
         private AbstractChannelHandlerContext ctx;
         private Object msg;
         private ChannelPromise promise;
-        private int size;
+        private int size; // sign bit controls flush
 
         @SuppressWarnings("unchecked")
-        private AbstractWriteTask(Recycler.Handle<? extends AbstractWriteTask> handle) {
-            this.handle = (Recycler.Handle<AbstractWriteTask>) handle;
+        private WriteTask(Handle<? extends WriteTask> handle) {
+            this.handle = (Handle<WriteTask>) handle;
         }
 
-        protected static void init(AbstractWriteTask task, AbstractChannelHandlerContext ctx,
-                                   Object msg, ChannelPromise promise) {
+        protected static void init(WriteTask task, AbstractChannelHandlerContext ctx,
+                                   Object msg, ChannelPromise promise, boolean flush) {
             task.ctx = ctx;
             task.msg = msg;
             task.promise = promise;
@@ -1064,13 +1074,20 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             } else {
                 task.size = 0;
             }
+            if (flush) {
+                task.size |= Integer.MIN_VALUE;
+            }
         }
 
         @Override
-        public final void run() {
+        public void run() {
             try {
                 decrementPendingOutboundBytes();
-                write(ctx, msg, promise);
+                if (size >= 0) {
+                    ctx.invokeWrite(msg, promise);
+                } else {
+                    ctx.invokeWriteAndFlush(msg, promise);
+                }
             } finally {
                 recycle();
             }
@@ -1086,7 +1103,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
 
         private void decrementPendingOutboundBytes() {
             if (ESTIMATE_TASK_SIZE_ON_SUBMIT) {
-                ctx.pipeline.decrementPendingOutboundBytes(size);
+                ctx.pipeline.decrementPendingOutboundBytes(size & Integer.MAX_VALUE);
             }
         }
 
@@ -1096,58 +1113,6 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             msg = null;
             promise = null;
             handle.recycle(this);
-        }
-
-        protected void write(AbstractChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-            ctx.invokeWrite(msg, promise);
-        }
-    }
-
-    static final class WriteTask extends AbstractWriteTask implements SingleThreadEventLoop.NonWakeupRunnable {
-
-        private static final Recycler<WriteTask> RECYCLER = new Recycler<WriteTask>() {
-            @Override
-            protected WriteTask newObject(Handle<WriteTask> handle) {
-                return new WriteTask(handle);
-            }
-        };
-
-        static WriteTask newInstance(
-                AbstractChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-            WriteTask task = RECYCLER.get();
-            init(task, ctx, msg, promise);
-            return task;
-        }
-
-        private WriteTask(Recycler.Handle<WriteTask> handle) {
-            super(handle);
-        }
-    }
-
-    static final class WriteAndFlushTask extends AbstractWriteTask {
-
-        private static final Recycler<WriteAndFlushTask> RECYCLER = new Recycler<WriteAndFlushTask>() {
-            @Override
-            protected WriteAndFlushTask newObject(Handle<WriteAndFlushTask> handle) {
-                return new WriteAndFlushTask(handle);
-            }
-        };
-
-        static WriteAndFlushTask newInstance(
-                AbstractChannelHandlerContext ctx, Object msg,  ChannelPromise promise) {
-            WriteAndFlushTask task = RECYCLER.get();
-            init(task, ctx, msg, promise);
-            return task;
-        }
-
-        private WriteAndFlushTask(Recycler.Handle<WriteAndFlushTask> handle) {
-            super(handle);
-        }
-
-        @Override
-        public void write(AbstractChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-            super.write(ctx, msg, promise);
-            ctx.invokeFlush();
         }
     }
 
